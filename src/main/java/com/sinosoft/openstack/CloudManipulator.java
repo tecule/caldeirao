@@ -1,0 +1,66 @@
+package com.sinosoft.openstack;
+
+import java.util.List;
+import java.util.Map;
+
+import org.openstack4j.model.compute.Flavor;
+import org.openstack4j.model.compute.FloatingIP;
+import org.openstack4j.model.compute.QuotaSet;
+import org.openstack4j.model.compute.Server;
+import org.openstack4j.model.compute.Server.Status;
+import org.openstack4j.model.compute.VNCConsole;
+import org.openstack4j.model.compute.ext.Hypervisor;
+import org.openstack4j.model.image.Image;
+import org.openstack4j.model.network.NetFloatingIP;
+import org.openstack4j.model.network.Port;
+import org.openstack4j.model.storage.block.BlockQuotaSet;
+import org.openstack4j.model.storage.block.Volume;
+import org.openstack4j.model.storage.block.BlockLimits.Absolute;
+
+public interface CloudManipulator {
+	public String createProject(String projectName, String projectDescription, int instanceQuota, int cpuQuota, int memoryQuota);
+	public QuotaSet updateProjectComputeServiceQuota(int instanceQuota, int cpuQuota, int memoryQuota);
+	public Absolute getProjectBlockStorageQuotaUsage();
+	public BlockQuotaSet updateProjectBlockStorageQuota(int volumes, int gigabytes);
+	public boolean deleteProject();
+	public List<? extends Volume> getVolumes();
+	public Volume createVolume(String volumeName, String volumeDescription, int volumeCapacity);
+	public Volume getVolume(String volumeId);
+	public boolean deleteVolume(String volumeId);
+	public boolean attachVolume(String serverId, String volumeId);
+	public boolean detachVolume(String serverId, String volumeId);
+	public void waitVolumeStatus(String volumeId, org.openstack4j.model.storage.block.Volume.Status status, int minute) throws InterruptedException;
+	public List<? extends Image> getImages();
+	public Image getImage(String imageId);
+	public void waitImageStatus(String imageId, org.openstack4j.model.image.Image.Status status, int minute) throws InterruptedException;
+	public Image updateImage(String imageId, String imageName, boolean publicity);
+	public boolean deleteImage(String imageId);
+	public List<? extends Hypervisor> getHypervisors();
+	public List<? extends Server> getServers();
+	public Flavor getFlavor(int cpu, int memory, int disk);
+	public Flavor createFlavor(int cpu, int memory, int disk);
+	public Server bootServer(String serverName, String flavorId, String imageId);
+	public void waitServerStatus(String serverId, List<Status> statusList, int minute) throws InterruptedException;
+	public Server getServer(String serverId);
+	public boolean startServer(String serverId);
+	public boolean rebootServer(String serverId);
+	public boolean stopServer(String serverId);
+	public boolean deleteServer(String serverId);
+	public VNCConsole getServerVNCConsole(String serverId);
+	public Server renameServer(String serverId, String newName);
+	public boolean associateFloatingIp(String serverId, String floatingIpAddress);
+	public boolean deallocateFloatingIp(String serverId, String floatingIpAddress);
+	public String createSnapshot(String serverId, String snapshotName);
+	public boolean liveMigrate(String serverId, String hypervisorName);
+	public Map<String, String> getServerInfo(String serverId);
+	public String createAlarm(String serverId, String alarmName, String meterName, float threshold);
+	public boolean updateAlarm(String alarmId, boolean enabled, float threshold);
+	public boolean deleteAlarm(String alarmId);
+	public String getAlarmState(String alarmId);
+	public Map<String, Object> getSamples(String serverId, String meterName, long timestamp);
+	public List<String> getFloatingIpRange();
+	public List<? extends Port> getGateways();
+	public List<? extends NetFloatingIP> getFloatingIpList();
+	public List<? extends FloatingIP> getProjectFloatingIpList();
+	public List<String> getAvailableFloatingIp(); 
+}
