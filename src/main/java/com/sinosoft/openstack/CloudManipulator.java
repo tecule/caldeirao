@@ -25,6 +25,7 @@ public interface CloudManipulator {
 	public boolean deleteProject();
 	public List<? extends Volume> getVolumes();
 	public Volume createVolume(String volumeName, String volumeDescription, int volumeCapacity);
+	public boolean modifyVolume(String volumeId, String volumeName, String volumeDescription);
 	public Volume getVolume(String volumeId);
 	public boolean deleteVolume(String volumeId);
 	public boolean attachVolume(String serverId, String volumeId);

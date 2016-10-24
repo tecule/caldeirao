@@ -269,6 +269,17 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
+	public boolean modifyVolume(String volumeId, String volumeName, String volumeDescription) {
+		ActionResponse response = tenantClient.blockStorage().volumes().update(volumeId, volumeName, volumeDescription);
+		if (false == response.isSuccess()) {
+			logger.error(response.getFault());
+			return false;
+		}
+
+		return true;
+	}
+	
+	@Override
 	public Volume getVolume(String volumeId) {
 		Volume volume = tenantClient.blockStorage().volumes().get(volumeId);
 		return volume;
