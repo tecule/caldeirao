@@ -802,7 +802,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 
 			int responseCode = response.getResponseStatus().getStatusCode();
 			String responseContent = response.getEntity();
-			logger.debug("responseCode: " + responseCode + ", responseContent：" + responseContent);
+			logger.trace("responseCode: " + responseCode + ", responseContent：" + responseContent);
 			if (201 == responseCode) {
 				Alarm createdAlarm = mapper.readValue(responseContent, Alarm.class);
 				return createdAlarm.getAlarmId();
@@ -825,7 +825,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 
 			int responseCode = response.getResponseStatus().getStatusCode();
 			String responseContent = response.getEntity();
-			logger.debug("responseCode: " + responseCode + ", responseContent：" + responseContent);
+			logger.trace("responseCode: " + responseCode + ", responseContent：" + responseContent);
 			if (200 == responseCode) {
 				ObjectMapper mapper = new ObjectMapper();
 				Alarm alarm = mapper.readValue(responseContent, Alarm.class);
@@ -869,7 +869,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 
 			int responseCode = response.getResponseStatus().getStatusCode();
 			String responseContent = response.getEntity();
-			logger.debug("responseCode: " + responseCode + ", responseContent：" + responseContent);
+			logger.trace("responseCode: " + responseCode + ", responseContent：" + responseContent);
 			if (200 == responseCode) {
 				return true;
 			} else {
@@ -892,7 +892,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 
 			int responseCode = response.getResponseStatus().getStatusCode();
 			String responseContent = response.getEntity();
-			logger.debug("responseCode: " + responseCode + ", responseContent：" + responseContent);
+			logger.trace("responseCode: " + responseCode + ", responseContent：" + responseContent);
 			if (204 == responseCode) {
 				return true;
 			} else {
