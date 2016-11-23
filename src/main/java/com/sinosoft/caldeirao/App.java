@@ -24,29 +24,40 @@ public class App {
 		
 		CloudConfig config = new CloudConfig();
 		config.setCloudManipulatorVersion("v3");
-		config.setAuthUrl("http://192.168.101.121:5000/v3");
+//		config.setAuthUrl("http://192.168.101.121:5000/v3");
+//		config.setAdminUsername("admin");
+//		config.setAdminPassword("123456");
+//		config.setPublicNetworkId("cd3a36fb-6c72-4d99-bb5e-04269eb1c1f2");
+//		config.setAdminUserId("7c7caee4862249cf97347e69c4cc603d");
+//		config.setDomainName("default");
+//		config.setDomainId("70167b6b0c6e4955a19983e94cb02239");
+//		config.setAdminProjectId("f00fa7550d56409f91c2162821ce759b");
+//		config.setAdminRoleName("admin");
+//		config.setAodhServiceUrl("http://192.168.101.121:8042/v2/alarms");		
+
+		config.setAuthUrl("http://192.168.101.151:5000/v3");
 		config.setAdminUsername("admin");
 		config.setAdminPassword("123456");
-		config.setPublicNetworkId("cd3a36fb-6c72-4d99-bb5e-04269eb1c1f2");
-		config.setAdminUserId("7c7caee4862249cf97347e69c4cc603d");
+		config.setPublicNetworkId("01f12475-3687-4214-9d6d-8f2d46447eb1");
+		config.setAdminUserId("20de005915c54ee989f3b95da7de5a35");
 		config.setDomainName("default");
-		config.setDomainId("70167b6b0c6e4955a19983e94cb02239");
-		config.setAdminProjectId("f00fa7550d56409f91c2162821ce759b");
+		config.setDomainId("7e4ad5d50d344a3498184e9bd44d7976");
+		config.setAdminProjectId("3eff824e94eb477889925ee6275a08ed");
 		config.setAdminRoleName("admin");
-		config.setAodhServiceUrl("http://192.168.101.121:8042/v2/alarms");		
+		config.setAodhServiceUrl("http://192.168.101.151:8042/v2/alarms");
+				
+//		// Get a project-scoped token:
+//		OSClientV3 projectClient = OSFactory.builderV3().endpoint("http://192.168.101.121:5000/v3")
+//				.credentials("admin", "123456", Identifier.byName("default"))
+//				.scopeToProject(Identifier.byId("f00fa7550d56409f91c2162821ce759b")).authenticate();
+//		
+//		// Get a domain-scoped token (Note that you’re going to need a role-assignment on the domain first!)
+//		// http://docs.openstack.org/developer/keystone/api_curl_examples.html
+//		OSClientV3 domainClient = OSFactory.builderV3().endpoint("http://192.168.101.121:5000/v3").credentials("7c7caee4862249cf97347e69c4cc603d", "123456")
+//				.scopeToDomain(Identifier.byId("70167b6b0c6e4955a19983e94cb02239")).authenticate();
 		
-		// Get a project-scoped token:
-		OSClientV3 projectClient = OSFactory.builderV3().endpoint("http://192.168.101.121:5000/v3")
-				.credentials("admin", "123456", Identifier.byName("default"))
-				.scopeToProject(Identifier.byId("f00fa7550d56409f91c2162821ce759b")).authenticate();
-		
-		// Get a domain-scoped token (Note that you’re going to need a role-assignment on the domain first!)
-		// http://docs.openstack.org/developer/keystone/api_curl_examples.html
-		OSClientV3 domainClient = OSFactory.builderV3().endpoint("http://192.168.101.121:5000/v3").credentials("7c7caee4862249cf97347e69c4cc603d", "123456")
-				.scopeToDomain(Identifier.byId("70167b6b0c6e4955a19983e94cb02239")).authenticate();
-		
-		CloudManipulator cloud = CloudManipulatorFactory.createCloudManipulator(config);
-		cloud.createProject("test1", "d", 1, 1, 1);
+//		CloudManipulator cloud = CloudManipulatorFactory.createCloudManipulator(config);
+//		cloud.createProject("test1", "d", 1, 1, 1);
 		
 		return;
 	}

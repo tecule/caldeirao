@@ -69,17 +69,23 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	private String projectId;
 	private OSClientV2 tenantClient;
 
-	public CloudManipulatorV2(CloudConfig appConfig) {
-		OS_AUTH_URL = appConfig.getAuthUrl();
-		OS_USERNAME = appConfig.getAdminUsername();
-		OS_PASSWORD = appConfig.getAdminPassword();
-		OS_TENANT_NAME = appConfig.getAdminProjectName();
-		PUBLIC_NETWORK_ID = appConfig.getPublicNetworkId();
-
-		this.projectId = null;
-		tenantClient = OSFactory.builderV2().endpoint(OS_AUTH_URL).credentials(OS_USERNAME, OS_PASSWORD)
-				.tenantName(OS_TENANT_NAME).authenticate();
-	}
+	/**
+	 * class constructor. create connection to admin project.
+	 * 
+	 * @param appConfig
+	 * @author xiangqian
+	 */
+	// public CloudManipulatorV2(CloudConfig appConfig) {
+	// OS_AUTH_URL = appConfig.getAuthUrl();
+	// OS_USERNAME = appConfig.getAdminUsername();
+	// OS_PASSWORD = appConfig.getAdminPassword();
+	// OS_TENANT_NAME = appConfig.getAdminProjectName();
+	// PUBLIC_NETWORK_ID = appConfig.getPublicNetworkId();
+	//
+	// this.projectId = null;
+	// tenantClient = OSFactory.builderV2().endpoint(OS_AUTH_URL).credentials(OS_USERNAME, OS_PASSWORD)
+	// .tenantName(OS_TENANT_NAME).authenticate();
+	// }
 
 	public CloudManipulatorV2(CloudConfig appConfig, String projectId) {
 		OS_AUTH_URL = appConfig.getAuthUrl();
@@ -182,7 +188,7 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
-	public Absolute getProjectBlockStorageQuotaUsage() {
+	public Absolute getBlockStorageQuotaUsage() {
 		BlockLimits limits = tenantClient.blockStorage().getLimits();
 		Absolute absolute = limits.getAbsolute();
 
@@ -190,12 +196,12 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
-	public BlockQuotaSet updateProjectBlockStorageQuota(int volumes, int gigabytes) {
+	public BlockQuotaSet updateBlockStorageQuota(int volumes, int gigabytes) {
 		BlockQuotaSet quota = tenantClient.blockStorage().quotaSets()
 				.updateForTenant(projectId, Builders.blockQuotaSet().volumes(volumes).gigabytes(gigabytes).build());
 		return quota;
 	}
-	
+
 	@Override
 	public boolean deleteProject() {
 		ActionResponse response;
@@ -262,9 +268,9 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
-	public Volume createVolume(String volumeName, String volumeDescription, int volumeCapacity) {
+	public Volume createVolume(String volumeName, String volumeDescription, int volumeSize) {
 		Volume volume = tenantClient.blockStorage().volumes()
-				.create(Builders.volume().name(volumeName).description(volumeDescription).size(volumeCapacity).build());
+				.create(Builders.volume().name(volumeName).description(volumeDescription).size(volumeSize).build());
 		return volume;
 	}
 
@@ -278,7 +284,7 @@ public class CloudManipulatorV2 implements CloudManipulator {
 
 		return true;
 	}
-	
+
 	@Override
 	public Volume getVolume(String volumeId) {
 		Volume volume = tenantClient.blockStorage().volumes().get(volumeId);
@@ -297,28 +303,7 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
-	public boolean attachVolume(String serverId, String volumeId) {
-		VolumeAttachment attachment = tenantClient.compute().servers().attachVolume(serverId, volumeId, null);
-		if (null == attachment) {
-			return false;
-		}
-
-		return true;
-	}
-
-	@Override
-	public boolean detachVolume(String serverId, String diskId) {
-		ActionResponse response = tenantClient.compute().servers().detachVolume(serverId, diskId);
-		if (false == response.isSuccess()) {
-			logger.error(response.getFault());
-			return false;
-		}
-
-		return true;
-	}
-
-	@Override
-	public void waitVolumeStatus(String volumeId, org.openstack4j.model.storage.block.Volume.Status status, int minute)
+	public boolean waitVolumeStatus(String volumeId, List<org.openstack4j.model.storage.block.Volume.Status> statusList, int minute)
 			throws InterruptedException {
 		int sleepInterval = 6000;
 		int sleepCount = minute * 60 * 1000 / sleepInterval;
@@ -326,15 +311,38 @@ public class CloudManipulatorV2 implements CloudManipulator {
 		int loop = 0;
 		while (loop < sleepCount) {
 			Volume volume = tenantClient.blockStorage().volumes().get(volumeId);
-			if ((volume.getStatus() != null) && (volume.getStatus() == status)) {
-				break;
+			if ((null != volume) && (volume.getStatus() != null)) {
+				for (org.openstack4j.model.storage.block.Volume.Status status : statusList) {
+					if (volume.getStatus() == status) {
+						return true;
+					}
+				}
 			}
 
 			Thread.sleep(sleepInterval);
 			loop++;
 		}
 
-		return;
+		return false;
+	}
+
+	@Override
+	public boolean waitVolumeDeleted(String volumeId, int minute) throws InterruptedException {
+		int sleepInterval = 6000;
+		int sleepCount = minute * 60 * 1000 / sleepInterval;
+
+		int loop = 0;
+		while (loop < sleepCount) {
+			Volume volume = getVolume(volumeId);
+			if (null == volume) {
+				return true;
+			}
+
+			Thread.sleep(sleepInterval);
+			loop++;
+		}
+
+		return false;
 	}
 
 	@Override
@@ -623,6 +631,27 @@ public class CloudManipulatorV2 implements CloudManipulator {
 		}
 
 		return false;
+	}
+
+	@Override
+	public boolean attachVolume(String serverId, String volumeId) {
+		VolumeAttachment attachment = tenantClient.compute().servers().attachVolume(serverId, volumeId, null);
+		if (null == attachment) {
+			return false;
+		}
+	
+		return true;
+	}
+
+	@Override
+	public boolean detachVolume(String serverId, String diskId) {
+		ActionResponse response = tenantClient.compute().servers().detachVolume(serverId, diskId);
+		if (false == response.isSuccess()) {
+			logger.error(response.getFault());
+			return false;
+		}
+	
+		return true;
 	}
 
 	@Override

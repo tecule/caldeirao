@@ -14,6 +14,7 @@ import org.jboss.resteasy.client.ClientRequest;
 import org.jboss.resteasy.client.ClientResponse;
 import org.openstack4j.api.Builders;
 import org.openstack4j.api.OSClient.OSClientV3;
+import org.openstack4j.api.exceptions.AuthenticationException;
 import org.openstack4j.model.common.ActionResponse;
 import org.openstack4j.model.common.Identifier;
 import org.openstack4j.model.compute.Action;
@@ -75,7 +76,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	private String OS_USERNAME;
 	private String OS_USER_ID;
 	private String OS_PASSWORD;
-	private String OS_PROJECT_ID;
+	// private String OS_PROJECT_ID;
 	private String OS_ROLE_NAME;
 	private String AODH_SERVICE_URL;
 	private String PUBLIC_NETWORK_ID;
@@ -83,23 +84,35 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	private String projectId;
 	private OSClientV3 projectClient;
 
-	public CloudManipulatorV3(CloudConfig appConfig) {
-		OS_AUTH_URL = appConfig.getAuthUrl();
-		OS_USER_DOMAIN_NAME = appConfig.getDomainName();
-		OS_USER_DOMAIN_ID = appConfig.getDomainId();
-		OS_USERNAME = appConfig.getAdminUsername();
-		OS_USER_ID = appConfig.getAdminUserId();
-		OS_PASSWORD = appConfig.getAdminPassword();
-		OS_PROJECT_ID = appConfig.getAdminProjectId();
-		OS_ROLE_NAME = appConfig.getAdminRoleName();
-		AODH_SERVICE_URL = appConfig.getAodhServiceUrl();
-		PUBLIC_NETWORK_ID = appConfig.getPublicNetworkId();
-
-		this.projectId = OS_PROJECT_ID;
-		projectClient = OSFactory.builderV3().endpoint(OS_AUTH_URL)
-				.credentials(OS_USERNAME, OS_PASSWORD, Identifier.byName(OS_USER_DOMAIN_NAME))
-				.scopeToProject(Identifier.byId(OS_PROJECT_ID)).authenticate();
-	}
+	/**
+	 * class constructor. create connection to admin project.
+	 * 
+	 * @param appConfig
+	 * @author xiangqian
+	 */
+	// public CloudManipulatorV3(CloudConfig appConfig) {
+	// OS_AUTH_URL = appConfig.getAuthUrl();
+	// OS_USER_DOMAIN_NAME = appConfig.getDomainName();
+	// OS_USER_DOMAIN_ID = appConfig.getDomainId();
+	// OS_USERNAME = appConfig.getAdminUsername();
+	// OS_USER_ID = appConfig.getAdminUserId();
+	// OS_PASSWORD = appConfig.getAdminPassword();
+	// OS_PROJECT_ID = appConfig.getAdminProjectId();
+	// OS_ROLE_NAME = appConfig.getAdminRoleName();
+	// AODH_SERVICE_URL = appConfig.getAodhServiceUrl();
+	// PUBLIC_NETWORK_ID = appConfig.getPublicNetworkId();
+	//
+	// this.projectId = OS_PROJECT_ID;
+	// try {
+	// projectClient = OSFactory.builderV3().endpoint(OS_AUTH_URL)
+	// .credentials(OS_USERNAME, OS_PASSWORD, Identifier.byName(OS_USER_DOMAIN_NAME))
+	// .scopeToProject(Identifier.byId(OS_PROJECT_ID)).authenticate();
+	// } catch (AuthenticationException e) {
+	// throw new CloudException("云服务认证发生错误。", e);
+	// } catch (Exception e) {
+	// throw new CloudException("创建云服务连接发生错误。", e);
+	// }
+	// }
 
 	public CloudManipulatorV3(CloudConfig appConfig, String projectId) {
 		OS_AUTH_URL = appConfig.getAuthUrl();
@@ -108,15 +121,21 @@ public class CloudManipulatorV3 implements CloudManipulator {
 		OS_USERNAME = appConfig.getAdminUsername();
 		OS_USER_ID = appConfig.getAdminUserId();
 		OS_PASSWORD = appConfig.getAdminPassword();
-		OS_PROJECT_ID = appConfig.getAdminProjectId();
+		// OS_PROJECT_ID = appConfig.getAdminProjectId();
 		OS_ROLE_NAME = appConfig.getAdminRoleName();
 		AODH_SERVICE_URL = appConfig.getAodhServiceUrl();
 		PUBLIC_NETWORK_ID = appConfig.getPublicNetworkId();
 
 		this.projectId = projectId;
-		projectClient = OSFactory.builderV3().endpoint(OS_AUTH_URL)
-				.credentials(OS_USERNAME, OS_PASSWORD, Identifier.byName(OS_USER_DOMAIN_NAME))
-				.scopeToProject(Identifier.byId(projectId)).authenticate();
+		try {
+			projectClient = OSFactory.builderV3().endpoint(OS_AUTH_URL)
+					.credentials(OS_USERNAME, OS_PASSWORD, Identifier.byName(OS_USER_DOMAIN_NAME))
+					.scopeToProject(Identifier.byId(projectId)).authenticate();
+		} catch (AuthenticationException e) {
+			throw new CloudException("云服务认证发生错误。", e);
+		} catch (Exception e) {
+			throw new CloudException("创建云服务连接发生错误。", e);
+		}
 	}
 
 	@Override
@@ -178,6 +197,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 				.router()
 				.create(Builders.router().name("router" + "_" + projectId.substring(0, 8)).adminStateUp(true)
 						.externalGateway(PUBLIC_NETWORK_ID).tenantId(projectId).build());
+		@SuppressWarnings("unused")
 		RouterInterface iface = newProjectClient.networking().router()
 				.attachInterface(router.getId(), AttachInterfaceType.SUBNET, subnet.getId());
 
@@ -219,18 +239,25 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	}
 
 	@Override
-	public Absolute getProjectBlockStorageQuotaUsage() {
-		BlockLimits limits = projectClient.blockStorage().getLimits();
-		Absolute absolute = limits.getAbsolute();
-
-		return absolute;
+	public Absolute getBlockStorageQuotaUsage() {
+		try {
+			BlockLimits limits = projectClient.blockStorage().getLimits();
+			Absolute absolute = limits.getAbsolute();
+			return absolute;
+		} catch (Exception e) {
+			throw new CloudException("获取块存储配额使用量发生错误。", e);
+		}
 	}
 
 	@Override
-	public BlockQuotaSet updateProjectBlockStorageQuota(int volumes, int gigabytes) {
-		BlockQuotaSet quota = projectClient.blockStorage().quotaSets()
-				.updateForTenant(projectId, Builders.blockQuotaSet().volumes(volumes).gigabytes(gigabytes).build());
-		return quota;
+	public BlockQuotaSet updateBlockStorageQuota(int volumes, int gigabytes) {
+		try {
+			BlockQuotaSet quota = projectClient.blockStorage().quotaSets()
+					.updateForTenant(projectId, Builders.blockQuotaSet().volumes(volumes).gigabytes(gigabytes).build());
+			return quota;
+		} catch (Exception e) {
+			throw new CloudException("更新块存储配额发生错误。", e);
+		}
 	}
 
 	@Override
@@ -294,90 +321,125 @@ public class CloudManipulatorV3 implements CloudManipulator {
 
 	@Override
 	public List<? extends Volume> getVolumes() {
-		List<? extends Volume> volumes = projectClient.blockStorage().volumes().list();
-		return volumes;
+		try {
+			List<? extends Volume> volumes = projectClient.blockStorage().volumes().list();
+			return volumes;
+		} catch (Exception e) {
+			throw new CloudException("获取卷列表发生错误。", e);
+		}
 	}
 
 	@Override
-	public Volume createVolume(String volumeName, String volumeDescription, int volumeCapacity) {
-		Volume volume = projectClient.blockStorage().volumes()
-				.create(Builders.volume().name(volumeName).description(volumeDescription).size(volumeCapacity).build());
-		return volume;
+	public Volume createVolume(String volumeName, String volumeDescription, int volumeSize) {
+		try {
+			Volume volume = projectClient.blockStorage().volumes()
+					.create(Builders.volume().name(volumeName).description(volumeDescription).size(volumeSize).build());
+			return volume;
+		} catch (Exception e) {
+			String message = "";
+			if (e.getMessage().indexOf("VolumeLimitExceeded") >= 0) {
+				message = "已经创建的卷达到了系统允许的最大配额，请增加块存储配额，或删除不需要的卷。";
+			} else {
+				message = "创建卷发生错误。";
+			}
+
+			throw new CloudException(message, e);
+		}
 	}
 
 	@Override
 	public boolean modifyVolume(String volumeId, String volumeName, String volumeDescription) {
-		ActionResponse response = projectClient.blockStorage().volumes().update(volumeId, volumeName, volumeDescription);
-		if (false == response.isSuccess()) {
-			logger.error(response.getFault());
-			return false;
-		}
+		try {
+			// modification will return true as long as cinder-api is working
+			ActionResponse response = projectClient.blockStorage().volumes()
+					.update(volumeId, volumeName, volumeDescription);
+			if (false == response.isSuccess()) {
+				logger.error("修改卷信息失败：" + response.getFault());
+				return false;
+			}
 
-		return true;
+			return true;
+		} catch (Exception e) {
+			throw new CloudException("修改卷信息发生错误。", e);
+		}
 	}
-	
+
 	@Override
 	public Volume getVolume(String volumeId) {
-		Volume volume = projectClient.blockStorage().volumes().get(volumeId);
-		return volume;
+		try {
+			Volume volume = projectClient.blockStorage().volumes().get(volumeId);
+			return volume;
+		} catch (Exception e) {
+			throw new CloudException("获取卷发生错误。", e);
+		}
 	}
 
 	@Override
 	public boolean deleteVolume(String volumeId) {
-		ActionResponse response = projectClient.blockStorage().volumes().delete(volumeId);
-		if (response.isSuccess()) {
+		try {
+			ActionResponse response = projectClient.blockStorage().volumes().delete(volumeId);
+			if (false == response.isSuccess()) {
+				logger.error("删除卷失败：" + response.getFault());
+				return false;
+			}
+
 			return true;
-		} else {
-			logger.error(response.getFault());
-			return false;
+		} catch (Exception e) {
+			throw new CloudException("删除卷发生错误。", e);
 		}
 	}
 
 	@Override
-	public boolean attachVolume(String serverId, String volumeId) {
-		VolumeAttachment attachment = projectClient.compute().servers().attachVolume(serverId, volumeId, null);
-		if (null == attachment) {
-			return false;
-		}
-
-		return true;
-	}
-
-	@Override
-	public boolean detachVolume(String serverId, String volumeId) {
-		ActionResponse response = projectClient.compute().servers().detachVolume(serverId, volumeId);
-		if (false == response.isSuccess()) {
-			logger.error(response.getFault());
-			return false;
-		}
-
-		return true;
-	}
-
-	@Override
-	public void waitVolumeStatus(String volumeId, org.openstack4j.model.storage.block.Volume.Status status, int minute)
-			throws InterruptedException {
+	public boolean waitVolumeStatus(String volumeId, List<org.openstack4j.model.storage.block.Volume.Status> statusList,
+			int minute) throws InterruptedException {
 		int sleepInterval = 6000;
 		int sleepCount = minute * 60 * 1000 / sleepInterval;
 
 		int loop = 0;
 		while (loop < sleepCount) {
-			Volume volume = projectClient.blockStorage().volumes().get(volumeId);
-			if ((volume.getStatus() != null) && (volume.getStatus() == status)) {
-				break;
+			Volume volume = getVolume(volumeId);
+			if ((null != volume) && (volume.getStatus() != null)) {
+				for (org.openstack4j.model.storage.block.Volume.Status status : statusList) {
+					if (volume.getStatus() == status) {
+						return true;
+					}
+				}
 			}
 
 			Thread.sleep(sleepInterval);
 			loop++;
 		}
 
-		return;
+		return false;
+	}
+
+	@Override
+	public boolean waitVolumeDeleted(String volumeId, int minute) throws InterruptedException {
+		int sleepInterval = 6000;
+		int sleepCount = minute * 60 * 1000 / sleepInterval;
+
+		int loop = 0;
+		while (loop < sleepCount) {
+			Volume volume = getVolume(volumeId);
+			if (null == volume) {
+				return true;
+			}
+
+			Thread.sleep(sleepInterval);
+			loop++;
+		}
+
+		return false;
 	}
 
 	@Override
 	public List<? extends Image> getImages() {
-		List<? extends Image> images = projectClient.images().list();
-		return images;
+		try {
+			List<? extends Image> images = projectClient.images().list();
+			return images;
+		} catch (Exception e) {
+			throw new CloudException("获取镜像列表发生错误。", e);
+		}
 	}
 
 	@Override
@@ -429,8 +491,12 @@ public class CloudManipulatorV3 implements CloudManipulator {
 
 	@Override
 	public List<? extends Hypervisor> getHypervisors() {
-		List<? extends Hypervisor> hypervisors = projectClient.compute().hypervisors().list();
-		return hypervisors;
+		try {
+			List<? extends Hypervisor> hypervisors = projectClient.compute().hypervisors().list();
+			return hypervisors;
+		} catch (Exception e) {
+			throw new CloudException("获取计算节点列表发生错误。", e);
+		}
 	}
 
 	@Override
@@ -483,7 +549,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 		// wait until vm is ready
 		while (loop < sleepCount) {
 			Server server = projectClient.compute().servers().get(serverId);
-			if (server.getStatus() != null) {
+			if ((null != server) && (server.getStatus() != null)) {
 				// TODO: user may change server status
 				for (Status status : statusList) {
 					if (server.getStatus() == status) {
@@ -666,6 +732,35 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	}
 
 	@Override
+	public boolean attachVolume(String serverId, String volumeId) {
+		try {
+			VolumeAttachment attachment = projectClient.compute().servers().attachVolume(serverId, volumeId, null);
+			if (null == attachment) {
+				return false;
+			}
+	
+			return true;
+		} catch (Exception e) {
+			throw new CloudException("挂载卷发生错误。", e);
+		}
+	}
+
+	@Override
+	public boolean detachVolume(String serverId, String volumeId) {
+		try {
+			ActionResponse response = projectClient.compute().servers().detachVolume(serverId, volumeId);
+			if (false == response.isSuccess()) {
+				logger.error("卸载卷失败：" + response.getFault());
+				return false;
+			}
+
+			return true;
+		} catch (Exception e) {
+			throw new CloudException("卸载卷发生错误。", e);
+		}
+	}
+
+	@Override
 	public String createSnapshot(String serverId, String snapshotName) {
 		String snapshotId = projectClient.compute().servers().createSnapshot(serverId, snapshotName);
 		return snapshotId;
@@ -811,7 +906,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 						+ ", responseContent：" + responseContent);
 			}
 		} catch (Exception e) {
-			throw new CloudException("创建虚拟机告警发生异常。" + e.getMessage(), e);
+			throw new CloudException("创建虚拟机告警发生错误。" + e.getMessage(), e);
 		}
 
 		return null;
@@ -835,7 +930,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 						+ responseContent);
 			}
 		} catch (Exception e) {
-			throw new CloudException("获取虚拟机告警发生异常。" + e.getMessage(), e);
+			throw new CloudException("获取虚拟机告警发生错误。" + e.getMessage(), e);
 		}
 
 		return null;
@@ -877,7 +972,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 						+ responseContent);
 			}
 		} catch (Exception e) {
-			throw new CloudException("更新虚拟机告警发生异常。" + e.getMessage(), e);
+			throw new CloudException("更新虚拟机告警发生错误。" + e.getMessage(), e);
 		}
 
 		return false;
@@ -900,7 +995,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 						+ responseContent);
 			}
 		} catch (Exception e) {
-			throw new CloudException("删除虚拟机告警发生异常。" + e.getMessage(), e);
+			throw new CloudException("删除虚拟机告警发生错误。" + e.getMessage(), e);
 		}
 
 		return false;
