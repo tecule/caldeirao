@@ -1,6 +1,7 @@
 package com.sinosoft.openstack;
 
 import com.sinosoft.openstack.exception.CloudException;
+import com.sinosoft.openstack.type.CloudConfig;
 
 public class CloudManipulatorFactory {
 	/**

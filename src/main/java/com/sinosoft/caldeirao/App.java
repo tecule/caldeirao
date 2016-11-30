@@ -4,9 +4,9 @@ import org.openstack4j.api.OSClient.OSClientV3;
 import org.openstack4j.model.common.Identifier;
 import org.openstack4j.openstack.OSFactory;
 
-import com.sinosoft.openstack.CloudConfig;
 import com.sinosoft.openstack.CloudManipulator;
 import com.sinosoft.openstack.CloudManipulatorFactory;
+import com.sinosoft.openstack.type.CloudConfig;
 
 
 /**

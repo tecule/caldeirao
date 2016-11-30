@@ -10,6 +10,7 @@ import java.util.UUID;
 
 import org.openstack4j.api.Builders;
 import org.openstack4j.api.OSClient.OSClientV2;
+import org.openstack4j.api.exceptions.AuthenticationException;
 import org.openstack4j.api.types.Facing;
 import org.openstack4j.model.common.ActionResponse;
 import org.openstack4j.model.compute.Action;
@@ -56,6 +57,11 @@ import org.openstack4j.openstack.telemetry.domain.CeilometerAlarm.CeilometerQuer
 import org.openstack4j.openstack.telemetry.domain.CeilometerAlarm.CeilometerThresholdRule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.sinosoft.openstack.type.ActionResult;
+import com.sinosoft.openstack.type.CloudConfig;
+import com.sinosoft.openstack.type.ServerInfo;
+import com.sinosoft.openstack.type.telemetry.ServerSamples;
 
 public class CloudManipulatorV2 implements CloudManipulator {
 	private static Logger logger = LoggerFactory.getLogger(CloudManipulatorV2.class);
@@ -142,6 +148,7 @@ public class CloudManipulatorV2 implements CloudManipulator {
 				.router()
 				.create(Builders.router().name("router").adminStateUp(true).externalGateway(PUBLIC_NETWORK_ID)
 						.tenantId(tenantId).build());
+		@SuppressWarnings("unused")
 		RouterInterface iface = client.networking().router()
 				.attachInterface(router.getId(), AttachInterfaceType.SUBNET, subnet.getId());
 
@@ -174,7 +181,7 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
-	public QuotaSet updateProjectComputeServiceQuota(int instanceQuota, int cpuQuota, int memoryQuota) {
+	public QuotaSet updateComputeServiceQuota(int instanceQuota, int cpuQuota, int memoryQuota) {
 		OSClientV2 client = OSFactory.builderV2().endpoint(OS_AUTH_URL).credentials(OS_USERNAME, OS_PASSWORD)
 				.tenantId(projectId).perspective(Facing.ADMIN).authenticate();
 
@@ -203,62 +210,96 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
-	public boolean deleteProject() {
+	public ActionResult deleteProject() {
+		ActionResult result = new ActionResult();
+		boolean success = false;
+		String message = "";
+
 		ActionResponse response;
-		OSClientV2 client = OSFactory.builderV2().endpoint(OS_AUTH_URL).credentials(OS_USERNAME, OS_PASSWORD)
-				.tenantId(projectId).perspective(Facing.ADMIN).authenticate();
 
-		// check if this tenant has vm
-		List<? extends Server> servers = client.compute().servers().list();
-		if (servers.size() > 0) {
-			logger.error("项目包含虚拟机，不允许删除");
-			return false;
-		}
+		try {
+			OSClientV2 client = OSFactory.builderV2().endpoint(OS_AUTH_URL).credentials(OS_USERNAME, OS_PASSWORD)
+					.tenantId(projectId).perspective(Facing.ADMIN).authenticate();
 
-		// get internal subnet
-		List<Network> tenantNetworks = new ArrayList<Network>();
-		List<Subnet> tenantSubnets = new ArrayList<Subnet>();
-		List<? extends Network> networks = client.networking().network().list();
-		for (Network network : networks) {
-			if (network.getTenantId().equalsIgnoreCase(projectId)) {
-				tenantNetworks.add(network);
-				tenantSubnets.addAll(network.getNeutronSubnets());
+			// check if this tenant has vm
+			List<? extends Server> servers = client.compute().servers().list();
+			if (servers.size() > 0) {
+				success = false;
+				message = "删除项目发生错误，当前项目包含虚拟机，不允许删除";
+				logger.error(message);
+				result.setSuccess(success);
+				result.setMessage(message);
+				return result;
 			}
-		}
 
-		// delete router
-		List<? extends Router> routers = client.networking().router().list();
-		for (Router router : routers) {
-			if (router.getTenantId().equalsIgnoreCase(projectId)) {
-				// detach from internal network
-				for (Subnet subnet : tenantSubnets) {
-					client.networking().router().detachInterface(router.getId(), subnet.getId(), null);
+			// get internal subnet
+			List<Network> tenantNetworks = new ArrayList<Network>();
+			List<Subnet> tenantSubnets = new ArrayList<Subnet>();
+			List<? extends Network> networks = client.networking().network().list();
+			for (Network network : networks) {
+				if (network.getTenantId().equalsIgnoreCase(projectId)) {
+					tenantNetworks.add(network);
+					tenantSubnets.addAll(network.getNeutronSubnets());
 				}
+			}
 
-				response = client.networking().router().delete(router.getId());
+			// delete router
+			List<? extends Router> routers = client.networking().router().list();
+			for (Router router : routers) {
+				if (router.getTenantId().equalsIgnoreCase(projectId)) {
+					// detach from internal network
+					for (Subnet subnet : tenantSubnets) {
+						client.networking().router().detachInterface(router.getId(), subnet.getId(), null);
+					}
+
+					response = client.networking().router().delete(router.getId());
+					if (response.isSuccess() == false) {
+						success = false;
+						message = "删除项目发生错误，删除路由器失败。";
+						logger.error(message + response.getFault());
+						result.setSuccess(success);
+						result.setMessage(message);
+						return result;
+					}
+				}
+			}
+
+			// delete tenant network
+			for (Network network : tenantNetworks) {
+				response = client.networking().network().delete(network.getId());
 				if (response.isSuccess() == false) {
-					logger.error("删除路由器失败。" + response.getFault());
-					return false;
+					success = false;
+					message = "删除项目发生错误，删除网络失败。";
+					logger.error(message + response.getFault());
+					result.setSuccess(success);
+					result.setMessage(message);
+					return result;
 				}
 			}
-		}
 
-		// delete tenant network
-		for (Network network : tenantNetworks) {
-			response = client.networking().network().delete(network.getId());
+			response = client.identity().tenants().delete(projectId);
 			if (response.isSuccess() == false) {
-				logger.error("删除网络失败。" + response.getFault());
-				return false;
+				success = false;
+				message = "删除项目发生错误，删除项目失败。";
+				logger.error(message + response.getFault());
+				result.setSuccess(success);
+				result.setMessage(message);
+				return result;
 			}
+		} catch (AuthenticationException e) {
+			success = false;
+			message = "删除项目发生错误。";
+			logger.error(message + e.getMessage());
+			result.setSuccess(success);
+			result.setMessage(message);
+			return result;
 		}
 
-		response = client.identity().tenants().delete(projectId);
-		if (response.isSuccess() == false) {
-			logger.error("删除项目失败。" + response.getFault());
-			return false;
-		}
-
-		return true;
+		success = true;
+		message = "";
+		result.setSuccess(success);
+		result.setMessage(message);
+		return result;
 	}
 
 	@Override
@@ -303,16 +344,20 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
-	public boolean waitVolumeStatus(String volumeId, List<org.openstack4j.model.storage.block.Volume.Status> statusList, int minute)
+	public boolean waitVolumeStatus(String volumeId, List<Volume.Status> statusList, int minute)
 			throws InterruptedException {
 		int sleepInterval = 6000;
 		int sleepCount = minute * 60 * 1000 / sleepInterval;
 
 		int loop = 0;
 		while (loop < sleepCount) {
-			Volume volume = tenantClient.blockStorage().volumes().get(volumeId);
-			if ((null != volume) && (volume.getStatus() != null)) {
-				for (org.openstack4j.model.storage.block.Volume.Status status : statusList) {
+			Volume volume = getVolume(volumeId);
+			if (null == volume) {
+				return false;
+			}
+
+			if (volume.getStatus() != null) {
+				for (Volume.Status status : statusList) {
 					if (volume.getStatus() == status) {
 						return true;
 					}
@@ -358,28 +403,53 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
-	public void waitImageStatus(String imageId, org.openstack4j.model.image.Image.Status status, int minute)
+	public boolean waitImageStatus(String imageId, org.openstack4j.model.image.Image.Status status, int minute)
 			throws InterruptedException {
 		int sleepInterval = 6000;
 		int sleepCount = minute * 60 * 1000 / sleepInterval;
 
 		int loop = 0;
 		while (loop < sleepCount) {
-			Image image = tenantClient.images().get(imageId);
-			if ((image.getStatus() != null) && (image.getStatus() == status)) {
-				break;
+			Image image = getImage(imageId);
+			if (null == image) {
+				return false;
+			}
+
+			if (image.getStatus() != null) {
+				if (image.getStatus() == status) {
+					return true;
+				}
 			}
 
 			Thread.sleep(sleepInterval);
 			loop++;
 		}
 
-		return;
+		return false;
 	}
+
+	// @Override
+	// public boolean waitImageDeleted(String imageId, int minute) throws InterruptedException {
+	// int sleepInterval = 6000;
+	// int sleepCount = minute * 60 * 1000 / sleepInterval;
+	//
+	// int loop = 0;
+	// while (loop < sleepCount) {
+	// Image image = getImage(imageId);
+	// if (null == image) {
+	// return true;
+	// }
+	//
+	// Thread.sleep(sleepInterval);
+	// loop++;
+	// }
+	//
+	// return false;
+	// }
 
 	@Override
 	public Image updateImage(String imageId, String imageName, boolean publicity) {
-		Image image = tenantClient.images().get(imageId);
+		Image image = getImage(imageId);
 		Image newImage = tenantClient.images().update(image.toBuilder().name(imageName).isPublic(publicity).build());
 		return newImage;
 	}
@@ -443,34 +513,30 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
-	public void waitServerStatus(String serverId, List<Status> statusList, int minute) throws InterruptedException {
+	public boolean waitServerStatus(String serverId, List<Status> statusList, int minute) throws InterruptedException {
 		int sleepInterval = 6000;
 		int sleepCount = minute * 60 * 1000 / sleepInterval;
 
 		int loop = 0;
-		boolean exitWait = false;
-		// wait until vm is ready
 		while (loop < sleepCount) {
-			Server server = tenantClient.compute().servers().get(serverId);
-			if (server.getStatus() != null) {
-				// TODO: user may change server status
-				for (Status status : statusList) {
-					if (server.getStatus() == status) {
-						exitWait = true;
-						break;
-					}
-				}
+			Server server = getServer(serverId);
+			if (null == server) {
+				return false;
 			}
 
-			if (exitWait == true) {
-				break;
+			if (server.getStatus() != null) {
+				for (Status status : statusList) {
+					if ((server.getStatus() == status) && (null == server.getTaskState())) {
+						return true;
+					}
+				}
 			}
 
 			Thread.sleep(sleepInterval);
 			loop++;
 		}
 
-		return;
+		return false;
 	}
 
 	@Override
@@ -548,52 +614,89 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
-	public boolean associateFloatingIp(String serverId, String floatingIpAddress) {
-		// allocate all free ips from pool
-		String pool = tenantClient.compute().floatingIps().getPoolNames().get(0);
-		while (true) {
-			try {
-				tenantClient.compute().floatingIps().allocateIP(pool);
-			} catch (Exception e) {
-				break;
-			}
-		}
+	public ActionResult associateFloatingIp(String serverId, String floatingIpAddress) {
+		ActionResult result = new ActionResult();
+		boolean success = false;
+		String message = "";
 
-		// associate ip if it's free
-		// deallocate other free ip back to pool, so other project can make use of it
-		List<? extends FloatingIP> availableIps = tenantClient.compute().floatingIps().list();
-		Server server = tenantClient.compute().servers().get(serverId);
-		boolean associated = false;
-		for (FloatingIP ip : availableIps) {
-			if (ip.getInstanceId() == null) {
-				if (ip.getFloatingIpAddress().equalsIgnoreCase(floatingIpAddress)) {
-					ActionResponse response = tenantClient.compute().floatingIps()
-							.addFloatingIP(server, floatingIpAddress);
-					if (true == response.isSuccess()) {
-						associated = true;
-					} else {
-						logger.error(response.getFault());
+		try {
+			Server server = getServer(serverId);
+			if (null == server) {
+				success = false;
+				message = "绑定地址失败，服务器不存在。";
+				logger.error(message);
+				result.setSuccess(success);
+				result.setMessage(message);
+				return result;
+			}
+
+			List<String> pools = tenantClient.compute().floatingIps().getPoolNames();
+			if (pools.size() != 1) {
+				success = false;
+				message = "绑定地址失败，项目地址池数量不为1。";
+				logger.error(message);
+				result.setSuccess(success);
+				result.setMessage(message);
+				return result;
+			}
+
+			// allocate all free ips from pool
+			String pool = pools.get(0);
+			while (true) {
+				try {
+					tenantClient.compute().floatingIps().allocateIP(pool);
+				} catch (Exception e) {
+					break;
+				}
+			}
+
+			/*
+			 * associate ip if it's free, deallocate other free ip back to pool, so other project can make use of it.
+			 */
+			List<? extends FloatingIP> availableIps = tenantClient.compute().floatingIps().list();
+			for (FloatingIP ip : availableIps) {
+				if (ip.getInstanceId() == null) {
+					if (ip.getFloatingIpAddress().equalsIgnoreCase(floatingIpAddress)) {
+						ActionResponse response = tenantClient.compute().floatingIps()
+								.addFloatingIP(server, floatingIpAddress);
+						if (true == response.isSuccess()) {
+							success = true;
+							message = "";
+
+							continue;
+						} else {
+							success = false;
+							message = "绑定地址失败。";
+							logger.error(message + response.getFault());
+						}
 					}
 
-					continue;
-				}
-
-				// deallocate unused ip back to the pool
-				ActionResponse response2 = tenantClient.compute().floatingIps().deallocateIP(ip.getId());
-				if (false == response2.isSuccess()) {
-					logger.error("response.getFault()");
+					// deallocate unused ip back to the pool
+					ActionResponse response2 = tenantClient.compute().floatingIps().deallocateIP(ip.getId());
+					if (false == response2.isSuccess()) {
+						logger.error("释放地址" + ip.getFloatingIpAddress() + "失败：" + response2.getFault());
+					}
 				}
 			}
-		}
 
-		return associated;
+			result.setSuccess(success);
+			result.setMessage(message);
+			return result;
+		} catch (Exception e) {
+			success = false;
+			message = "绑定地址发生错误。";
+			logger.error(message + e.getMessage());
+			result.setSuccess(success);
+			result.setMessage(message);
+			return result;
+		}
 	}
 
 	private boolean deallocate2(OSClientV2 tenantClient, Server server, String floatingIpAddress) {
 		// disassociate ip from server
 		ActionResponse response = tenantClient.compute().floatingIps().removeFloatingIP(server, floatingIpAddress);
 		if (false == response.isSuccess()) {
-			logger.error(response.getFault());
+			logger.error("解绑地址失败。" + response.getFault());
 			return false;
 		}
 
@@ -602,21 +705,38 @@ public class CloudManipulatorV2 implements CloudManipulator {
 		for (FloatingIP floatingIp : floatingIps) {
 			if (floatingIp.getFloatingIpAddress().equalsIgnoreCase(floatingIpAddress)) {
 				ActionResponse response2 = tenantClient.compute().floatingIps().deallocateIP(floatingIp.getId());
-				if (true == response2.isSuccess()) {
-					return true;
-				} else {
-					logger.error(response2.getFault());
-					return false;
+				if (false == response2.isSuccess()) {
+					logger.warn("解绑地址出现警告，释放地址" + floatingIp.getFloatingIpAddress() + "失败。" + response2.getFault());
 				}
+				// if (true == response2.isSuccess()) {
+				// return true;
+				// } else {
+				// logger.error(response2.getFault());
+				// return false;
+				// }
 			}
 		}
 
-		return false;
+		// return true despite the ip is not deallocated back to pool
+		return true;
 	}
 
 	@Override
-	public boolean deallocateFloatingIp(String serverId, String floatingIpAddress) {
-		Server server = tenantClient.compute().servers().get(serverId);
+	public ActionResult deallocateFloatingIp(String serverId, String floatingIpAddress) {
+		ActionResult result = new ActionResult();
+		boolean success = false;
+		String message = "";
+
+		Server server = getServer(serverId);
+		if (null == server) {
+			success = false;
+			message = "解绑地址失败，服务器不存在。";
+			logger.error(message);
+			result.setSuccess(success);
+			result.setMessage(message);
+			return result;
+		}
+
 		Iterator<List<? extends Address>> it = server.getAddresses().getAddresses().values().iterator();
 		while (it.hasNext()) {
 			List<? extends Address> addresses = it.next();
@@ -625,12 +745,28 @@ public class CloudManipulatorV2 implements CloudManipulator {
 
 				if (addrType.equalsIgnoreCase("floating") && (addr.equalsIgnoreCase(floatingIpAddress))) {
 					boolean deallocated = deallocate2(tenantClient, server, floatingIpAddress);
-					return deallocated;
+					if (true == deallocated) {
+						success = true;
+						message = "";
+						result.setSuccess(success);
+						result.setMessage(message);
+						return result;
+					} else {
+						success = false;
+						message = "解绑地址失败。";
+						result.setSuccess(success);
+						result.setMessage(message);
+						return result;
+					}
 				}
 			}
 		}
 
-		return false;
+		success = false;
+		message = "";
+		result.setSuccess(success);
+		result.setMessage(message);
+		return result;
 	}
 
 	@Override
@@ -639,7 +775,7 @@ public class CloudManipulatorV2 implements CloudManipulator {
 		if (null == attachment) {
 			return false;
 		}
-	
+
 		return true;
 	}
 
@@ -650,7 +786,7 @@ public class CloudManipulatorV2 implements CloudManipulator {
 			logger.error(response.getFault());
 			return false;
 		}
-	
+
 		return true;
 	}
 
@@ -681,10 +817,11 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
-	public Map<String, String> getServerInfo(String serverId) {
-		Map<String, String> map = new HashMap<String, String>();
-
-		Server server = tenantClient.compute().servers().get(serverId);
+	public ServerInfo getServerInfo(String serverId) {
+		Server server = getServer(serverId);
+		if (null == server) {
+			return null;
+		}
 
 		String privateIp = "", floatingIp = "";
 		Iterator<List<? extends Address>> it = server.getAddresses().getAddresses().values().iterator();
@@ -711,11 +848,11 @@ public class CloudManipulatorV2 implements CloudManipulator {
 
 		String physicalMachine = server.getHypervisorHostname();
 
-		map.put("privateIp", privateIp);
-		map.put("floatingIp", floatingIp);
-		map.put("physicalMachine", physicalMachine);
-
-		return map;
+		ServerInfo info = new ServerInfo();
+		info.setPrivateIp(privateIp);
+		info.setFloatingIp(floatingIp);
+		info.setPhysicalMachine(physicalMachine);
+		return info;
 	}
 
 	private String getResourceId(String serverId, String meterName) {
@@ -867,27 +1004,28 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
-	public Map<String, Object> getSamples(String serverId, String meterName, long timestamp) {
+	public ServerSamples getSamples(String serverId, String meterName, long timestamp) {
 		String resourceId = getResourceId(serverId, meterName);
 		if (null == resourceId) {
 			return null;
 		}
 
-		List<String> time_series = new ArrayList<String>();
+		ServerSamples serverSamples = new ServerSamples();
+		List<String> timeSeries = new ArrayList<String>();
 		List<Float> samples = new ArrayList<Float>();
-		Map<String, Object> map = new HashMap<String, Object>();
+
 		SampleCriteria criteria = new SampleCriteria().resource(resourceId)
 				.timestamp(SampleCriteria.Oper.GT, timestamp);
 		List<? extends MeterSample> meterSamples = tenantClient.telemetry().meters().samples(meterName, criteria);
 		for (MeterSample sample : meterSamples) {
-			time_series.add(processOpenstackTime(sample.getRecordedAt()));
+			timeSeries.add(processOpenstackTime(sample.getRecordedAt()));
 			samples.add(sample.getCounterVolume());
 		}
 
-		map.put("time_series", time_series);
-		map.put("samples", samples);
-
-		return map;
+		serverSamples.setMeterName(meterName);
+		serverSamples.setTimeSeries(timeSeries);
+		serverSamples.setSamples(samples);
+		return serverSamples;
 	}
 
 	@Override
@@ -940,7 +1078,7 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
-	public List<String> getAvailableFloatingIp() {
+	public List<String> getAvailableFloatingIpList() {
 		List<String> availableFloatingIp = new ArrayList<String>();
 
 		// allocate all ips from pool

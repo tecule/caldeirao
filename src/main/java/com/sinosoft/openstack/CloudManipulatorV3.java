@@ -2,10 +2,8 @@ package com.sinosoft.openstack;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import javax.ws.rs.core.MediaType;
@@ -60,9 +58,13 @@ import org.slf4j.LoggerFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.sinosoft.openstack.exception.CloudException;
-import com.sinosoft.openstack.telemetry.Alarm;
-import com.sinosoft.openstack.telemetry.Query;
-import com.sinosoft.openstack.telemetry.ThresholdRule;
+import com.sinosoft.openstack.type.ActionResult;
+import com.sinosoft.openstack.type.CloudConfig;
+import com.sinosoft.openstack.type.ServerInfo;
+import com.sinosoft.openstack.type.telemetry.Alarm;
+import com.sinosoft.openstack.type.telemetry.Query;
+import com.sinosoft.openstack.type.telemetry.ServerSamples;
+import com.sinosoft.openstack.type.telemetry.ThresholdRule;
 
 public class CloudManipulatorV3 implements CloudManipulator {
 	private static Logger logger = LoggerFactory.getLogger(CloudManipulatorV3.class);
@@ -141,101 +143,122 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	@Override
 	public String createProject(String projectName, String projectDescription, int instanceQuota, int cpuQuota,
 			int memoryQuota) {
-		OSClientV3 domainClient = OSFactory.builderV3().endpoint(OS_AUTH_URL).credentials(OS_USER_ID, OS_PASSWORD)
-				.scopeToDomain(Identifier.byId(OS_USER_DOMAIN_ID)).authenticate();
+		String projectId = "";
 
-		// create tenant
-		Project project = domainClient
-				.identity()
-				.projects()
-				.create(Builders.project().name(projectName + "_" + UUID.randomUUID().toString())
-						.description(projectDescription).build());
-		String projectId = project.getId();
+		try {
+			OSClientV3 domainClient = OSFactory.builderV3().endpoint(OS_AUTH_URL).credentials(OS_USER_ID, OS_PASSWORD)
+					.scopeToDomain(Identifier.byId(OS_USER_DOMAIN_ID)).authenticate();
 
-		// rename
-		domainClient.identity().projects()
-				.update(project.toBuilder().name(projectName + "_" + projectId.substring(0, 8)).build());
+			// create tenant
+			Project project = domainClient
+					.identity()
+					.projects()
+					.create(Builders.project().name(projectName + "_" + UUID.randomUUID().toString())
+							.description(projectDescription).build());
+			projectId = project.getId();
 
-		// set user permission
-		List<? extends User> users = domainClient.identity().users().getByName(OS_USERNAME);
-		User adminUser = users.get(0);
-		List<? extends Role> roles = domainClient.identity().roles().getByName(OS_ROLE_NAME);
-		Role adminRole = roles.get(0);
-		ActionResponse response = domainClient.identity().roles()
-				.grantProjectUserRole(projectId, adminUser.getId(), adminRole.getId());
-		if (false == response.isSuccess()) {
-			logger.error(response.getFault());
-		}
+			// rename
+			domainClient.identity().projects()
+					.update(project.toBuilder().name(projectName + "_" + projectId.substring(0, 8)).build());
 
-		// use project client for following operation
-		OSClientV3 newProjectClient = OSFactory.builderV3().endpoint(OS_AUTH_URL)
-				.credentials(OS_USERNAME, OS_PASSWORD, Identifier.byName(OS_USER_DOMAIN_NAME))
-				.scopeToProject(Identifier.byId(projectId)).authenticate();
+			// set user permission
+			List<? extends User> users = domainClient.identity().users().getByName(OS_USERNAME);
+			if (users.size() <= 0) {
+				throw new CloudException("获取用户发生错误。");
+			}
+			User adminUser = users.get(0);
+			List<? extends Role> roles = domainClient.identity().roles().getByName(OS_ROLE_NAME);
+			if (roles.size() <= 0) {
+				throw new CloudException("获取角色发生错误。");
+			}
+			Role adminRole = roles.get(0);
+			ActionResponse response = domainClient.identity().roles()
+					.grantProjectUserRole(projectId, adminUser.getId(), adminRole.getId());
+			if (false == response.isSuccess()) {
+				logger.error("设置角色发生错误。" + response.getFault());
+				throw new CloudException("设置角色发生错误。");
+			}
 
-		// set quota
-		newProjectClient
-				.compute()
-				.quotaSets()
-				.updateForTenant(projectId,
-						Builders.quotaSet().instances(instanceQuota).cores(cpuQuota).ram(memoryQuota * 1024).build());
+			// use project client for following operation
+			OSClientV3 newProjectClient = OSFactory.builderV3().endpoint(OS_AUTH_URL)
+					.credentials(OS_USERNAME, OS_PASSWORD, Identifier.byName(OS_USER_DOMAIN_NAME))
+					.scopeToProject(Identifier.byId(projectId)).authenticate();
 
-		// build network and router
-		Network network = newProjectClient
-				.networking()
-				.network()
-				.create(Builders.network().name("private" + "_" + projectId.substring(0, 8)).tenantId(projectId)
-						.adminStateUp(true).build());
-		// .addDNSNameServer("124.16.136.254")
-		Subnet subnet = newProjectClient
-				.networking()
-				.subnet()
-				.create(Builders.subnet().name("private_subnet" + "_" + projectId.substring(0, 8))
-						.networkId(network.getId()).tenantId(projectId).ipVersion(IPVersionType.V4)
-						.cidr("192.168.32.0/24").gateway("192.168.32.1").enableDHCP(true).build());
-		Router router = newProjectClient
-				.networking()
-				.router()
-				.create(Builders.router().name("router" + "_" + projectId.substring(0, 8)).adminStateUp(true)
-						.externalGateway(PUBLIC_NETWORK_ID).tenantId(projectId).build());
-		@SuppressWarnings("unused")
-		RouterInterface iface = newProjectClient.networking().router()
-				.attachInterface(router.getId(), AttachInterfaceType.SUBNET, subnet.getId());
-
-		// add security group rule
-		List<? extends SecGroupExtension> secGroups = newProjectClient.compute().securityGroups().list();
-		for (SecGroupExtension secGroup : secGroups) {
+			// set quota
 			newProjectClient
 					.compute()
-					.securityGroups()
-					.createRule(
-							Builders.secGroupRule().cidr("0.0.0.0/0").parentGroupId(secGroup.getId())
-									.protocol(IPProtocol.ICMP).range(-1, -1).build());
-			newProjectClient
-					.compute()
-					.securityGroups()
-					.createRule(
-							Builders.secGroupRule().cidr("0.0.0.0/0").parentGroupId(secGroup.getId())
-									.protocol(IPProtocol.TCP).range(1, 65535).build());
-			newProjectClient
-					.compute()
-					.securityGroups()
-					.createRule(
-							Builders.secGroupRule().cidr("0.0.0.0/0").parentGroupId(secGroup.getId())
-									.protocol(IPProtocol.UDP).range(1, 65535).build());
+					.quotaSets()
+					.updateForTenant(
+							projectId,
+							Builders.quotaSet().instances(instanceQuota).cores(cpuQuota).ram(memoryQuota * 1024)
+									.build());
+
+			// build network and router
+			Network network = newProjectClient
+					.networking()
+					.network()
+					.create(Builders.network().name("private" + "_" + projectId.substring(0, 8)).tenantId(projectId)
+							.adminStateUp(true).build());
+			// .addDNSNameServer("114.114.114.114")
+			Subnet subnet = newProjectClient
+					.networking()
+					.subnet()
+					.create(Builders.subnet().name("private_subnet" + "_" + projectId.substring(0, 8))
+							.networkId(network.getId()).tenantId(projectId).ipVersion(IPVersionType.V4)
+							.cidr("192.168.32.0/24").gateway("192.168.32.1").enableDHCP(true).build());
+			Router router = newProjectClient
+					.networking()
+					.router()
+					.create(Builders.router().name("router" + "_" + projectId.substring(0, 8)).adminStateUp(true)
+							.externalGateway(PUBLIC_NETWORK_ID).tenantId(projectId).build());
+			@SuppressWarnings("unused")
+			RouterInterface iface = newProjectClient.networking().router()
+					.attachInterface(router.getId(), AttachInterfaceType.SUBNET, subnet.getId());
+
+			// add security group rule
+			List<? extends SecGroupExtension> secGroups = newProjectClient.compute().securityGroups().list();
+			for (SecGroupExtension secGroup : secGroups) {
+				newProjectClient
+						.compute()
+						.securityGroups()
+						.createRule(
+								Builders.secGroupRule().cidr("0.0.0.0/0").parentGroupId(secGroup.getId())
+										.protocol(IPProtocol.ICMP).range(-1, -1).build());
+				newProjectClient
+						.compute()
+						.securityGroups()
+						.createRule(
+								Builders.secGroupRule().cidr("0.0.0.0/0").parentGroupId(secGroup.getId())
+										.protocol(IPProtocol.TCP).range(1, 65535).build());
+				newProjectClient
+						.compute()
+						.securityGroups()
+						.createRule(
+								Builders.secGroupRule().cidr("0.0.0.0/0").parentGroupId(secGroup.getId())
+										.protocol(IPProtocol.UDP).range(1, 65535).build());
+			}
+		} catch (Exception e) {
+			throw new CloudException("创建项目发生错误，项目ID：" + projectId + "。", e);
 		}
 
 		return projectId;
 	}
 
 	@Override
-	public QuotaSet updateProjectComputeServiceQuota(int instanceQuota, int cpuQuota, int memoryQuota) {
-		QuotaSet quota = projectClient
-				.compute()
-				.quotaSets()
-				.updateForTenant(projectId,
-						Builders.quotaSet().cores(cpuQuota).instances(instanceQuota).ram(memoryQuota * 1024).build());
+	public QuotaSet updateComputeServiceQuota(int instanceQuota, int cpuQuota, int memoryQuota) {
+		try {
+			QuotaSet quota = projectClient
+					.compute()
+					.quotaSets()
+					.updateForTenant(
+							projectId,
+							Builders.quotaSet().cores(cpuQuota).instances(instanceQuota).ram(memoryQuota * 1024)
+									.build());
 
-		return quota;
+			return quota;
+		} catch (Exception e) {
+			throw new CloudException("更新计算服务配额发生错误。", e);
+		}
 	}
 
 	@Override
@@ -261,62 +284,95 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	}
 
 	@Override
-	public boolean deleteProject() {
+	public ActionResult deleteProject() {
+		ActionResult result = new ActionResult();
+		boolean success = false;
+		String message = "";
+
 		ActionResponse response;
 
-		// check if this tenant has vm
-		List<? extends Server> servers = projectClient.compute().servers().list();
-		if (servers.size() > 0) {
-			logger.error("项目包含虚拟机，不允许删除");
-			return false;
-		}
-
-		// get internal subnet
-		List<Network> tenantNetworks = new ArrayList<Network>();
-		List<Subnet> tenantSubnets = new ArrayList<Subnet>();
-		List<? extends Network> networks = projectClient.networking().network().list();
-		for (Network network : networks) {
-			if (network.getTenantId().equalsIgnoreCase(projectId)) {
-				tenantNetworks.add(network);
-				tenantSubnets.addAll(network.getNeutronSubnets());
+		try {
+			// check if this tenant has server
+			List<? extends Server> servers = projectClient.compute().servers().list();
+			if (servers.size() > 0) {
+				success = false;
+				message = "删除项目发生错误，当前项目包含虚拟机，不允许删除。";
+				logger.error(message);
+				result.setSuccess(success);
+				result.setMessage(message);
+				return result;
 			}
-		}
 
-		// (1) delete router,
-		List<? extends Router> routers = projectClient.networking().router().list();
-		for (Router router : routers) {
-			if (router.getTenantId().equalsIgnoreCase(projectId)) {
-				// detach from internal network
-				for (Subnet subnet : tenantSubnets) {
-					projectClient.networking().router().detachInterface(router.getId(), subnet.getId(), null);
+			// get internal subnet
+			List<Network> tenantNetworks = new ArrayList<Network>();
+			List<Subnet> tenantSubnets = new ArrayList<Subnet>();
+			List<? extends Network> networks = projectClient.networking().network().list();
+			for (Network network : networks) {
+				if (network.getTenantId().equalsIgnoreCase(projectId)) {
+					tenantNetworks.add(network);
+					tenantSubnets.addAll(network.getNeutronSubnets());
 				}
+			}
 
-				// delete "HA subnet tenant xxx" automatically
-				response = projectClient.networking().router().delete(router.getId());
+			// (1) delete router,
+			List<? extends Router> routers = projectClient.networking().router().list();
+			for (Router router : routers) {
+				if (router.getTenantId().equalsIgnoreCase(projectId)) {
+					// detach from internal network
+					for (Subnet subnet : tenantSubnets) {
+						projectClient.networking().router().detachInterface(router.getId(), subnet.getId(), null);
+					}
+
+					// delete "HA subnet tenant xxx" automatically
+					response = projectClient.networking().router().delete(router.getId());
+					if (response.isSuccess() == false) {
+						success = false;
+						message = "删除项目发生错误，删除路由器失败。";
+						logger.error(message + response.getFault());
+						result.setSuccess(success);
+						result.setMessage(message);
+						return result;
+					}
+				}
+			}
+
+			// (2) delete tenant network
+			for (Network network : tenantNetworks) {
+				response = projectClient.networking().network().delete(network.getId());
 				if (response.isSuccess() == false) {
-					logger.error("删除路由器失败。" + response.getFault());
-					return false;
+					success = false;
+					message = "删除项目发生错误，删除网络失败。";
+					logger.error(message + response.getFault());
+					result.setSuccess(success);
+					result.setMessage(message);
+					return result;
 				}
 			}
-		}
 
-		// (2) delete tenant network
-		for (Network network : tenantNetworks) {
-			response = projectClient.networking().network().delete(network.getId());
+			// (3) delete project
+			response = projectClient.identity().projects().delete(projectId);
 			if (response.isSuccess() == false) {
-				logger.error("删除网络失败。" + response.getFault());
-				return false;
+				success = false;
+				message = "删除项目发生错误，删除项目失败。";
+				logger.error(message + response.getFault());
+				result.setSuccess(success);
+				result.setMessage(message);
+				return result;
 			}
+		} catch (Exception e) {
+			success = false;
+			message = "删除项目发生错误。";
+			logger.error(message + e.getMessage());
+			result.setSuccess(success);
+			result.setMessage(message);
+			return result;
 		}
 
-		// (3) delete project
-		response = projectClient.identity().projects().delete(projectId);
-		if (response.isSuccess() == false) {
-			logger.error("删除项目失败。" + response.getFault());
-			return false;
-		}
-
-		return true;
+		success = true;
+		message = "";
+		result.setSuccess(success);
+		result.setMessage(message);
+		return result;
 	}
 
 	@Override
@@ -390,16 +446,20 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	}
 
 	@Override
-	public boolean waitVolumeStatus(String volumeId, List<org.openstack4j.model.storage.block.Volume.Status> statusList,
-			int minute) throws InterruptedException {
+	public boolean waitVolumeStatus(String volumeId, List<Volume.Status> statusList, int minute)
+			throws InterruptedException {
 		int sleepInterval = 6000;
 		int sleepCount = minute * 60 * 1000 / sleepInterval;
 
 		int loop = 0;
 		while (loop < sleepCount) {
 			Volume volume = getVolume(volumeId);
-			if ((null != volume) && (volume.getStatus() != null)) {
-				for (org.openstack4j.model.storage.block.Volume.Status status : statusList) {
+			if (null == volume) {
+				return false;
+			}
+
+			if (volume.getStatus() != null) {
+				for (Volume.Status status : statusList) {
 					if (volume.getStatus() == status) {
 						return true;
 					}
@@ -444,49 +504,88 @@ public class CloudManipulatorV3 implements CloudManipulator {
 
 	@Override
 	public Image getImage(String imageId) {
-		Image image = projectClient.images().get(imageId);
-		return image;
+		try {
+			Image image = projectClient.images().get(imageId);
+			return image;
+		} catch (Exception e) {
+			throw new CloudException("获取镜像发生错误。", e);
+		}
 	}
 
 	@Override
-	public void waitImageStatus(String imageId, org.openstack4j.model.image.Image.Status status, int minute)
+	public boolean waitImageStatus(String imageId, org.openstack4j.model.image.Image.Status status, int minute)
 			throws InterruptedException {
 		int sleepInterval = 6000;
 		int sleepCount = minute * 60 * 1000 / sleepInterval;
 
 		int loop = 0;
 		while (loop < sleepCount) {
-			Image image = projectClient.images().get(imageId);
-			if ((image.getStatus() != null) && (image.getStatus() == status)) {
-				break;
+			Image image = getImage(imageId);
+			if (null == image) {
+				return false;
+			}
+
+			if (image.getStatus() != null) {
+				if (image.getStatus() == status) {
+					return true;
+				}
 			}
 
 			Thread.sleep(sleepInterval);
 			loop++;
 		}
 
-		return;
+		return false;
 	}
+
+	// @Override
+	// public boolean waitImageDeleted(String imageId, int minute) throws InterruptedException {
+	// int sleepInterval = 6000;
+	// int sleepCount = minute * 60 * 1000 / sleepInterval;
+	//
+	// int loop = 0;
+	// while (loop < sleepCount) {
+	// Image image = getImage(imageId);
+	// if (null == image) {
+	// return true;
+	// }
+	//
+	// Thread.sleep(sleepInterval);
+	// loop++;
+	// }
+	//
+	// return false;
+	// }
 
 	@Override
 	public Image updateImage(String imageId, String imageName, boolean publicity) {
 		// TODO image name with chinese character not work in "PUT /v1/images/xxxxxx"
-		Image image = projectClient.images().get(imageId);
-		// Image newImage =
-		// projectClient.images().update(image.toBuilder().name(imageName).isPublic(publicity).build());
-		Image newImage = projectClient.images().update(image.toBuilder().isPublic(publicity).build());
-		return newImage;
+
+		try {
+			Image image = getImage(imageId);
+
+			// Image newImage =
+			// projectClient.images().update(image.toBuilder().name(imageName).isPublic(publicity).build());
+			Image newImage = projectClient.images().update(image.toBuilder().isPublic(publicity).build());
+			return newImage;
+		} catch (Exception e) {
+			throw new CloudException("更新镜像发生错误。", e);
+		}
 	}
 
 	@Override
 	public boolean deleteImage(String imageId) {
-		ActionResponse response = projectClient.images().delete(imageId);
-		if (false == response.isSuccess()) {
-			logger.error(response.getFault());
-			return false;
-		}
+		try {
+			ActionResponse response = projectClient.images().delete(imageId);
+			if (false == response.isSuccess()) {
+				logger.error("删除镜像失败：" + response.getFault());
+				return false;
+			}
 
-		return true;
+			return true;
+		} catch (Exception e) {
+			throw new CloudException("删除镜像发生错误。", e);
+		}
 	}
 
 	@Override
@@ -501,197 +600,263 @@ public class CloudManipulatorV3 implements CloudManipulator {
 
 	@Override
 	public List<? extends Server> getServers() {
-		List<? extends Server> servers = projectClient.compute().servers().list();
-		return servers;
+		try {
+			List<? extends Server> servers = projectClient.compute().servers().list();
+			return servers;
+		} catch (Exception e) {
+			throw new CloudException("获取虚拟机实例列表发生错误。", e);
+		}
 	}
 
 	@Override
 	public Flavor getFlavor(int cpu, int memory, int disk) {
-		Flavor flavor = null;
-		List<? extends Flavor> flavors = projectClient.compute().flavors().list();
-		Iterator<? extends Flavor> it = flavors.iterator();
-		while (it.hasNext()) {
-			Flavor f = (Flavor) it.next();
-			if (f.getRam() == memory * 1024 && f.getDisk() == disk && f.getVcpus() == cpu) {
-				flavor = f;
-				break;
+		try {
+			Flavor flavor = null;
+			List<? extends Flavor> flavors = projectClient.compute().flavors().list();
+			Iterator<? extends Flavor> it = flavors.iterator();
+			while (it.hasNext()) {
+				Flavor f = (Flavor) it.next();
+				if (f.getRam() == memory * 1024 && f.getDisk() == disk && f.getVcpus() == cpu) {
+					flavor = f;
+					break;
+				}
 			}
-		}
 
-		return flavor;
+			return flavor;
+		} catch (Exception e) {
+			throw new CloudException("获取虚拟机配置发生错误。", e);
+		}
 	}
 
 	@Override
 	public Flavor createFlavor(int cpu, int memory, int disk) {
-		Flavor flavor = null;
-		String flavorName = "cpu" + cpu + "_mem" + memory + "_disk" + disk;
-		// TODO why rxtxFactor != 1.0
-		flavor = Builders.flavor().name(flavorName).ram(memory * 1024).vcpus(cpu).disk(disk).rxtxFactor(1.2f).build();
-		flavor = projectClient.compute().flavors().create(flavor);
+		try {
+			Flavor flavor = null;
+			String flavorName = "cpu" + cpu + "_mem" + memory + "_disk" + disk;
+			// TODO why rxtxFactor != 1.0
+			flavor = Builders.flavor().name(flavorName).ram(memory * 1024).vcpus(cpu).disk(disk).rxtxFactor(1.2f)
+					.build();
+			flavor = projectClient.compute().flavors().create(flavor);
 
-		return flavor;
+			return flavor;
+		} catch (Exception e) {
+			throw new CloudException("创建虚拟机配置发生错误。", e);
+		}
 	}
 
 	@Override
 	public Server bootServer(String serverName, String flavorId, String imageId) {
-		Server server = projectClient.compute().servers()
-				.boot(Builders.server().name(serverName).flavor(flavorId).image(imageId).build());
-		return server;
+		try {
+			Server server = projectClient.compute().servers()
+					.boot(Builders.server().name(serverName).flavor(flavorId).image(imageId).build());
+			return server;
+		} catch (Exception e) {
+			throw new CloudException("创建虚拟机实例发生错误。", e);
+		}
 	}
 
 	@Override
-	public void waitServerStatus(String serverId, List<Status> statusList, int minute) throws InterruptedException {
+	public boolean waitServerStatus(String serverId, List<Status> statusList, int minute) throws InterruptedException {
 		int sleepInterval = 6000;
 		int sleepCount = minute * 60 * 1000 / sleepInterval;
 
 		int loop = 0;
-		boolean exitWait = false;
-		// wait until vm is ready
 		while (loop < sleepCount) {
-			Server server = projectClient.compute().servers().get(serverId);
-			if ((null != server) && (server.getStatus() != null)) {
-				// TODO: user may change server status
-				for (Status status : statusList) {
-					if (server.getStatus() == status) {
-						exitWait = true;
-						break;
-					}
-				}
+			Server server = getServer(serverId);
+			if (null == server) {
+				return false;
 			}
 
-			if (exitWait == true) {
-				break;
+			if (server.getStatus() != null) {
+				for (Status status : statusList) {
+					if ((server.getStatus() == status) && (null == server.getTaskState())) {
+						return true;
+					}
+				}
 			}
 
 			Thread.sleep(sleepInterval);
 			loop++;
 		}
 
-		return;
-
+		return false;
 	}
 
 	@Override
 	public Server getServer(String serverId) {
-		Server server = projectClient.compute().servers().get(serverId);
-		return server;
+		try {
+			Server server = projectClient.compute().servers().get(serverId);
+			return server;
+		} catch (Exception e) {
+			throw new CloudException("获取虚拟机实例发生错误。", e);
+		}
 	}
 
 	@Override
 	public boolean startServer(String serverId) {
-		Server server = projectClient.compute().servers().get(serverId);
-		Status status = server.getStatus();
-		if (false == status.name().equalsIgnoreCase("ACTIVE")) {
+		try {
 			ActionResponse response = projectClient.compute().servers().action(serverId, Action.START);
 			if (false == response.isSuccess()) {
-				logger.error(response.getFault());
+				logger.error("启动虚拟机失败：" + response.getFault());
 				return false;
 			}
-		}
 
-		return true;
+			return true;
+		} catch (Exception e) {
+			throw new CloudException("启动虚拟机发生错误。", e);
+		}
 	}
 
 	@Override
 	public boolean rebootServer(String serverId) {
-		Server server = projectClient.compute().servers().get(serverId);
-		Status status = server.getStatus();
-		if (true == status.name().equalsIgnoreCase("ACTIVE")) {
+		try {
 			ActionResponse response = projectClient.compute().servers().reboot(serverId, RebootType.SOFT);
 			if (false == response.isSuccess()) {
-				logger.error(response.getFault());
+				logger.error("重启虚拟机失败：" + response.getFault());
 				return false;
 			}
-		}
 
-		return true;
+			return true;
+		} catch (Exception e) {
+			throw new CloudException("重启虚拟机发生错误。", e);
+		}
 	}
 
 	@Override
 	public boolean stopServer(String serverId) {
-		Server server = projectClient.compute().servers().get(serverId);
-		Status status = server.getStatus();
-		if (true == status.name().equalsIgnoreCase("ACTIVE")) {
+		try {
 			ActionResponse response = projectClient.compute().servers().action(serverId, Action.STOP);
 			if (false == response.isSuccess()) {
-				logger.error(response.getFault());
+				logger.error("关闭虚拟机失败：" + response.getFault());
 				return false;
 			}
-		}
 
-		return true;
+			return true;
+		} catch (Exception e) {
+			throw new CloudException("关闭虚拟机发生错误。", e);
+		}
 	}
 
 	@Override
 	public boolean deleteServer(String serverId) {
-		ActionResponse response = projectClient.compute().servers().delete(serverId);
-		if (false == response.isSuccess()) {
-			logger.error(response.getFault());
-			return false;
-		}
+		try {
+			ActionResponse response = projectClient.compute().servers().delete(serverId);
+			if (false == response.isSuccess()) {
+				logger.error(response.getFault());
+				return false;
+			}
 
-		return true;
+			return true;
+		} catch (Exception e) {
+			throw new CloudException("删除虚拟机发生错误。", e);
+		}
 	}
 
 	@Override
 	public VNCConsole getServerVNCConsole(String serverId) {
-		VNCConsole console = projectClient.compute().servers().getVNCConsole(serverId, Type.NOVNC);
-		return console;
+		try {
+			VNCConsole console = projectClient.compute().servers().getVNCConsole(serverId, Type.NOVNC);
+			return console;
+		} catch (Exception e) {
+			throw new CloudException("获取虚拟机控制台发生错误。", e);
+		}
 	}
 
 	@Override
 	public Server renameServer(String serverId, String newName) {
-		Server server = projectClient.compute().servers().update(serverId, ServerUpdateOptions.create().name(newName));
-		return server;
+		try {
+			Server server = projectClient.compute().servers()
+					.update(serverId, ServerUpdateOptions.create().name(newName));
+			return server;
+		} catch (Exception e) {
+			throw new CloudException("重命名虚拟机发生错误。", e);
+		}
 	}
 
 	@Override
-	public boolean associateFloatingIp(String serverId, String floatingIpAddress) {
-		// allocate all free ips from pool
-		String pool = projectClient.compute().floatingIps().getPoolNames().get(0);
-		while (true) {
-			try {
-				projectClient.compute().floatingIps().allocateIP(pool);
-			} catch (Exception e) {
-				break;
-			}
-		}
+	public ActionResult associateFloatingIp(String serverId, String floatingIpAddress) {
+		ActionResult result = new ActionResult();
+		boolean success = false;
+		String message = "";
 
-		// associate ip if it's free
-		// deallocate other free ip back to pool, so other project can make use of it
-		List<? extends FloatingIP> availableIps = projectClient.compute().floatingIps().list();
-		Server server = projectClient.compute().servers().get(serverId);
-		boolean associated = false;
-		for (FloatingIP ip : availableIps) {
-			if (ip.getInstanceId() == null) {
-				if (ip.getFloatingIpAddress().equalsIgnoreCase(floatingIpAddress)) {
-					ActionResponse response = projectClient.compute().floatingIps()
-							.addFloatingIP(server, floatingIpAddress);
-					if (true == response.isSuccess()) {
-						associated = true;
-					} else {
-						logger.error(response.getFault());
+		try {
+			Server server = getServer(serverId);
+			if (null == server) {
+				success = false;
+				message = "绑定地址失败，服务器不存在。";
+				logger.error(message);
+				result.setSuccess(success);
+				result.setMessage(message);
+				return result;
+			}
+
+			List<String> pools = projectClient.compute().floatingIps().getPoolNames();
+			if (pools.size() != 1) {
+				success = false;
+				message = "绑定地址失败，项目地址池数量不为1。";
+				logger.error(message);
+				result.setSuccess(success);
+				result.setMessage(message);
+				return result;
+			}
+
+			// allocate all free ips from pool
+			String pool = pools.get(0);
+			while (true) {
+				try {
+					projectClient.compute().floatingIps().allocateIP(pool);
+				} catch (Exception e) {
+					break;
+				}
+			}
+
+			/*
+			 * associate ip if it's free, deallocate other free ip back to pool, so other project can make use of it.
+			 */
+			List<? extends FloatingIP> availableIps = projectClient.compute().floatingIps().list();
+			for (FloatingIP ip : availableIps) {
+				if (ip.getInstanceId() == null) {
+					if (ip.getFloatingIpAddress().equalsIgnoreCase(floatingIpAddress)) {
+						ActionResponse response = projectClient.compute().floatingIps()
+								.addFloatingIP(server, floatingIpAddress);
+						if (true == response.isSuccess()) {
+							success = true;
+							message = "";
+
+							continue;
+						} else {
+							success = false;
+							message = "绑定地址失败。";
+							logger.error(message + response.getFault());
+						}
 					}
 
-					continue;
-				}
-
-				// deallocate unused ip back to the pool
-				ActionResponse response2 = projectClient.compute().floatingIps().deallocateIP(ip.getId());
-				if (false == response2.isSuccess()) {
-					logger.error("response.getFault()");
+					// deallocate unused ip back to the pool
+					ActionResponse response2 = projectClient.compute().floatingIps().deallocateIP(ip.getId());
+					if (false == response2.isSuccess()) {
+						logger.error("释放地址" + ip.getFloatingIpAddress() + "失败：" + response2.getFault());
+					}
 				}
 			}
-		}
 
-		return associated;
+			result.setSuccess(success);
+			result.setMessage(message);
+			return result;
+		} catch (Exception e) {
+			success = false;
+			message = "绑定地址发生错误。";
+			logger.error(message + e.getMessage());
+			result.setSuccess(success);
+			result.setMessage(message);
+			return result;
+		}
 	}
 
 	private boolean deallocate2(OSClientV3 projectClient, Server server, String floatingIpAddress) {
 		// disassociate ip from server
 		ActionResponse response = projectClient.compute().floatingIps().removeFloatingIP(server, floatingIpAddress);
 		if (false == response.isSuccess()) {
-			logger.error(response.getFault());
+			logger.error("解绑地址失败。" + response.getFault());
 			return false;
 		}
 
@@ -700,35 +865,77 @@ public class CloudManipulatorV3 implements CloudManipulator {
 		for (FloatingIP floatingIp : floatingIps) {
 			if (floatingIp.getFloatingIpAddress().equalsIgnoreCase(floatingIpAddress)) {
 				ActionResponse response2 = projectClient.compute().floatingIps().deallocateIP(floatingIp.getId());
-				if (true == response2.isSuccess()) {
-					return true;
-				} else {
-					logger.error(response2.getFault());
-					return false;
+				if (false == response2.isSuccess()) {
+					logger.warn("解绑地址出现警告，释放地址" + floatingIp.getFloatingIpAddress() + "失败。" + response2.getFault());
 				}
+				// if (true == response2.isSuccess()) {
+				// return true;
+				// } else {
+				// logger.error(response2.getFault());
+				// return false;
+				// }
 			}
 		}
 
-		return false;
+		// return true despite the ip is not deallocated back to pool
+		return true;
 	}
 
 	@Override
-	public boolean deallocateFloatingIp(String serverId, String floatingIpAddress) {
-		Server server = projectClient.compute().servers().get(serverId);
-		Iterator<List<? extends Address>> it = server.getAddresses().getAddresses().values().iterator();
-		while (it.hasNext()) {
-			List<? extends Address> addresses = it.next();
-			for (Address address : addresses) {
-				String addrType = address.getType(), addr = address.getAddr();
+	public ActionResult deallocateFloatingIp(String serverId, String floatingIpAddress) {
+		ActionResult result = new ActionResult();
+		boolean success = false;
+		String message = "";
 
-				if (addrType.equalsIgnoreCase("floating") && (addr.equalsIgnoreCase(floatingIpAddress))) {
-					boolean deallocated = deallocate2(projectClient, server, floatingIpAddress);
-					return deallocated;
+		try {
+			Server server = getServer(serverId);
+			if (null == server) {
+				success = false;
+				message = "解绑地址失败，服务器不存在。";
+				logger.error(message);
+				result.setSuccess(success);
+				result.setMessage(message);
+				return result;
+			}
+
+			Iterator<List<? extends Address>> it = server.getAddresses().getAddresses().values().iterator();
+			while (it.hasNext()) {
+				List<? extends Address> addresses = it.next();
+				for (Address address : addresses) {
+					String addrType = address.getType(), addr = address.getAddr();
+
+					if (addrType.equalsIgnoreCase("floating") && (addr.equalsIgnoreCase(floatingIpAddress))) {
+						boolean deallocated = deallocate2(projectClient, server, floatingIpAddress);
+						if (true == deallocated) {
+							success = true;
+							message = "";
+							result.setSuccess(success);
+							result.setMessage(message);
+							return result;
+						} else {
+							success = false;
+							message = "解绑地址失败。";
+							result.setSuccess(success);
+							result.setMessage(message);
+							return result;
+						}
+					}
 				}
 			}
+		} catch (Exception e) {
+			success = false;
+			message = "解绑地址发生错误。";
+			logger.error(message + e.getMessage());
+			result.setSuccess(success);
+			result.setMessage(message);
+			return result;
 		}
 
-		return false;
+		success = false;
+		message = "";
+		result.setSuccess(success);
+		result.setMessage(message);
+		return result;
 	}
 
 	@Override
@@ -738,7 +945,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 			if (null == attachment) {
 				return false;
 			}
-	
+
 			return true;
 		} catch (Exception e) {
 			throw new CloudException("挂载卷发生错误。", e);
@@ -762,36 +969,47 @@ public class CloudManipulatorV3 implements CloudManipulator {
 
 	@Override
 	public String createSnapshot(String serverId, String snapshotName) {
-		String snapshotId = projectClient.compute().servers().createSnapshot(serverId, snapshotName);
-		return snapshotId;
+		try {
+			String snapshotId = projectClient.compute().servers().createSnapshot(serverId, snapshotName);
+			return snapshotId;
+		} catch (Exception e) {
+			throw new CloudException("创建快照发生错误。", e);
+		}
 	}
 
 	@Override
 	public boolean liveMigrate(String serverId, String hypervisorName) {
-		// mitaka use FQDN in live migration
-		ActionResponse response = projectClient.compute().servers()
-				.liveMigrate(serverId, LiveMigrateOptions.create().host(hypervisorName));
-		if (false == response.isSuccess()) {
-			logger.error(response.getFault());
-			return false;
-		}
+		try {
+			// mitaka use FQDN in live migration
+			ActionResponse response = projectClient.compute().servers()
+					.liveMigrate(serverId, LiveMigrateOptions.create().host(hypervisorName));
+			if (false == response.isSuccess()) {
+				logger.error("迁移虚拟机实例失败：" + response.getFault());
+				return false;
+			}
 
-		return true;
+			return true;
+		} catch (Exception e) {
+			throw new CloudException("迁移虚拟机实例发生错误。", e);
+		}
 	}
 
 	@Override
-	public Map<String, String> getServerInfo(String serverId) {
-		Map<String, String> map = new HashMap<String, String>();
-
-		Server server = projectClient.compute().servers().get(serverId);
+	public ServerInfo getServerInfo(String serverId) {
+		Server server = getServer(serverId);
+		if (null == server) {
+			return null;
+		}
 
 		String privateIp = "", floatingIp = "";
 		Iterator<List<? extends Address>> it = server.getAddresses().getAddresses().values().iterator();
 		while (it.hasNext()) {
 			List<? extends Address> addresses = it.next();
 			for (int i = 0; i < addresses.size(); i++) {
-				// use addresses.get(i).getType().equalsIgnoreCase("fixed")
-				// instead of addresses.get(i).getType() == "fixed"
+				/*
+				 * use addresses.get(i).getType().equalsIgnoreCase("fixed") instead of addresses.get(i).getType() ==
+				 * "fixed"
+				 */
 				if (addresses.get(i).getType().equalsIgnoreCase("fixed")) {
 					// privateIp += addresses.get(i).getAddr() + ", ";
 					privateIp = addresses.get(i).getAddr();
@@ -810,13 +1028,23 @@ public class CloudManipulatorV3 implements CloudManipulator {
 
 		String physicalMachine = server.getHypervisorHostname();
 
-		map.put("privateIp", privateIp);
-		map.put("floatingIp", floatingIp);
-		map.put("physicalMachine", physicalMachine);
-
-		return map;
+		ServerInfo info = new ServerInfo();
+		info.setPrivateIp(privateIp);
+		info.setFloatingIp(floatingIp);
+		info.setPhysicalMachine(physicalMachine);
+		return info;
 	}
 
+	/**
+	 * get resource id by server and meter.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @param meterName
+	 *            - meter name
+	 * @return resource id, return null if resource not found
+	 * @author xiangqian
+	 */
 	private String getResourceId(String serverId, String meterName) {
 		List<String> serverResourceMeters = new ArrayList<String>(Arrays.asList("cpu_util", "memory.resident",
 				"disk.read.bytes.rate", "disk.write.bytes.rate"));
@@ -828,12 +1056,23 @@ public class CloudManipulatorV3 implements CloudManipulator {
 		if (serverResourceMeters.contains(meterName)) {
 			resourceId = serverId;
 		} else if (networkResourceMeters.contains(meterName)) {
+			Server server = getServer(serverId);
+			if (null == server) {
+				logger.error("虚拟机实例不存在");
+				return null;
+			}
+
 			// get network port resource id
 			List<? extends Port> ports = projectClient.networking().port()
 					.list(PortListOptions.create().deviceId(serverId));
+
 			// TODO: assume ports length > 0
-			String networkResourceId = projectClient.compute().servers().get(serverId).getInstanceName() + "-"
-					+ serverId + "-tap" + ports.get(0).getId();
+			if (ports.size() <= 0) {
+				logger.error("虚拟机实例缺少网络端口");
+				return null;
+			}
+
+			String networkResourceId = server.getInstanceName() + "-" + serverId + "-tap" + ports.get(0).getId();
 			resourceId = networkResourceId.substring(0, 69);
 		} else {
 			logger.error("无效的监控指标");
@@ -848,7 +1087,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 		// get resource id
 		String resourceId = getResourceId(serverId, meterName);
 		if (null == resourceId) {
-			return null;
+			throw new CloudException("创建虚拟机告警发生错误，无效的资源类型。");
 		}
 
 		Alarm alarm = new Alarm();
@@ -886,15 +1125,16 @@ public class CloudManipulatorV3 implements CloudManipulator {
 			ClientRequest request = new ClientRequest(AODH_SERVICE_URL);
 			request.header("X-Auth-Token", projectClient.getToken().getId());
 
-			// post alarm object raise RuntimeException, post the JSON string is ok
-			// java.lang.RuntimeException: could not find writer for content-type application/json type
+			/*
+			 * post alarm object raise RuntimeException, post the JSON string is ok: java.lang.RuntimeException: could
+			 * not find writer for content-type application/json type
+			 */
 			// request.body(MediaType.APPLICATION_JSON, alarm);
 			ObjectMapper mapper = new ObjectMapper();
 			String alarmJson = mapper.writeValueAsString(alarm);
 			request.body(MediaType.APPLICATION_JSON, alarmJson);
 
 			ClientResponse<String> response = request.post(String.class);
-
 			int responseCode = response.getResponseStatus().getStatusCode();
 			String responseContent = response.getEntity();
 			logger.trace("responseCode: " + responseCode + ", responseContent：" + responseContent);
@@ -902,16 +1142,22 @@ public class CloudManipulatorV3 implements CloudManipulator {
 				Alarm createdAlarm = mapper.readValue(responseContent, Alarm.class);
 				return createdAlarm.getAlarmId();
 			} else {
-				logger.error("创建虚拟机告警失败，虚拟机ID：" + serverId + ", 监控指标：" + meterName + "。response code: " + responseCode
-						+ ", responseContent：" + responseContent);
+				String message = "创建虚拟机告警失败，虚拟机ID：" + serverId + ", 监控指标：" + meterName + "。返回代码: " + responseCode;
+				throw new CloudException(message);
 			}
 		} catch (Exception e) {
-			throw new CloudException("创建虚拟机告警发生错误。" + e.getMessage(), e);
+			throw new CloudException("创建虚拟机告警发生错误。", e);
 		}
-
-		return null;
 	}
 
+	/**
+	 * get alarm by id.
+	 * 
+	 * @param alarmId
+	 *            - alarm id
+	 * @return alarm with the given id, or null if not found
+	 * @author xiangqian
+	 */
 	private Alarm getAlarm(String alarmId) {
 		try {
 			ClientRequest request = new ClientRequest(AODH_SERVICE_URL + "/" + alarmId);
@@ -928,29 +1174,30 @@ public class CloudManipulatorV3 implements CloudManipulator {
 			} else {
 				logger.error("获取虚拟机告警失败，告警ID：" + alarmId + "。response code: " + responseCode + ", responseContent："
 						+ responseContent);
+				return null;
 			}
 		} catch (Exception e) {
-			throw new CloudException("获取虚拟机告警发生错误。" + e.getMessage(), e);
+			throw new CloudException("获取虚拟机告警发生错误。", e);
 		}
-
-		return null;
 	}
 
 	@Override
 	public boolean updateAlarm(String alarmId, boolean enabled, float threshold) {
-		Alarm alarm = getAlarm(alarmId);
-		if (null == alarm) {
-			return false;
-		}
-
-		alarm.setEnabled(enabled);
-
-		ThresholdRule rule = alarm.getThresholdRule();
-		rule.setThreshold(threshold);
-
-		alarm.setThresholdRule(rule);
-
 		try {
+			Alarm alarm = getAlarm(alarmId);
+			if (null == alarm) {
+				String message = "更新虚拟机告警失败，告警不存在，告警ID：" + alarmId;
+				logger.error(message);
+				return false;
+			}
+
+			alarm.setEnabled(enabled);
+
+			ThresholdRule rule = alarm.getThresholdRule();
+			rule.setThreshold(threshold);
+
+			alarm.setThresholdRule(rule);
+
 			ClientRequest request = new ClientRequest(AODH_SERVICE_URL + "/" + alarmId);
 			request.header("X-Auth-Token", projectClient.getToken().getId());
 
@@ -964,18 +1211,17 @@ public class CloudManipulatorV3 implements CloudManipulator {
 
 			int responseCode = response.getResponseStatus().getStatusCode();
 			String responseContent = response.getEntity();
-			logger.trace("responseCode: " + responseCode + ", responseContent：" + responseContent);
+			logger.trace("返回代码: " + responseCode + ", 返回内容：" + responseContent);
 			if (200 == responseCode) {
 				return true;
 			} else {
-				logger.error("更新虚拟机告警失败，告警ID：" + alarmId + "。response code: " + responseCode + ", responseContent："
-						+ responseContent);
+				String message = "更新虚拟机告警失败，告警ID：" + alarmId + "。返回代码: " + responseCode + ", 返回内容：" + responseContent;
+				logger.error(message);
+				return false;
 			}
 		} catch (Exception e) {
-			throw new CloudException("更新虚拟机告警发生错误。" + e.getMessage(), e);
+			throw new CloudException("更新虚拟机告警发生错误。", e);
 		}
-
-		return false;
 	}
 
 	@Override
@@ -991,14 +1237,13 @@ public class CloudManipulatorV3 implements CloudManipulator {
 			if (204 == responseCode) {
 				return true;
 			} else {
-				logger.error("删除虚拟机告警失败，告警ID：" + alarmId + "。response code: " + responseCode + ", responseContent："
-						+ responseContent);
+				String message = "删除虚拟机告警失败，告警ID：" + alarmId + "。返回代码: " + responseCode + ", 返回内容：" + responseContent;
+				logger.error(message);
+				return false;
 			}
 		} catch (Exception e) {
 			throw new CloudException("删除虚拟机告警发生错误。" + e.getMessage(), e);
 		}
-
-		return false;
 	}
 
 	@Override
@@ -1062,27 +1307,32 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	}
 
 	@Override
-	public Map<String, Object> getSamples(String serverId, String meterName, long timestamp) {
+	public ServerSamples getSamples(String serverId, String meterName, long timestamp) {
+		ServerSamples serverSamples = new ServerSamples();
+		serverSamples.setMeterName(meterName);
+
 		String resourceId = getResourceId(serverId, meterName);
 		if (null == resourceId) {
-			return null;
+			return serverSamples;
 		}
 
-		List<String> time_series = new ArrayList<String>();
+		List<String> timeSeries = new ArrayList<String>();
 		List<Float> samples = new ArrayList<Float>();
-		Map<String, Object> map = new HashMap<String, Object>();
-		SampleCriteria criteria = new SampleCriteria().resource(resourceId)
-				.timestamp(SampleCriteria.Oper.GT, timestamp);
-		List<? extends MeterSample> meterSamples = projectClient.telemetry().meters().samples(meterName, criteria);
-		for (MeterSample sample : meterSamples) {
-			time_series.add(processOpenstackTime(sample.getRecordedAt()));
-			samples.add(sample.getCounterVolume());
+		try {
+			SampleCriteria criteria = new SampleCriteria().resource(resourceId).timestamp(SampleCriteria.Oper.GT,
+					timestamp);
+			List<? extends MeterSample> meterSamples = projectClient.telemetry().meters().samples(meterName, criteria);
+			for (MeterSample sample : meterSamples) {
+				timeSeries.add(processOpenstackTime(sample.getRecordedAt()));
+				samples.add(sample.getCounterVolume());
+			}
+
+			serverSamples.setTimeSeries(timeSeries);
+			serverSamples.setSamples(samples);
+			return serverSamples;
+		} catch (Exception e) {
+			throw new CloudException("获取虚拟机负载发生错误。", e);
 		}
-
-		map.put("time_series", time_series);
-		map.put("samples", samples);
-
-		return map;
 	}
 
 	@Override
@@ -1135,30 +1385,40 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	}
 
 	@Override
-	public List<String> getAvailableFloatingIp() {
+	public List<String> getAvailableFloatingIpList() {
 		List<String> availableFloatingIp = new ArrayList<String>();
 
-		// allocate all ips from pool
-		String pool = projectClient.compute().floatingIps().getPoolNames().get(0);
-		while (true) {
-			try {
-				projectClient.compute().floatingIps().allocateIP(pool);
-			} catch (Exception e) {
-				break;
+		try {
+			List<String> pools = projectClient.compute().floatingIps().getPoolNames();
+			if (pools.size() != 1) {
+				logger.error("获取可用地址失败，项目地址池数量不为1");
+				return availableFloatingIp;
 			}
-		}
 
-		List<? extends FloatingIP> floatingIps = projectClient.compute().floatingIps().list();
-		for (FloatingIP floatingIp : floatingIps) {
-			if (floatingIp.getInstanceId() == null) {
-				availableFloatingIp.add(floatingIp.getFloatingIpAddress());
-
-				// deallocate ip back to pool
-				ActionResponse response = projectClient.compute().floatingIps().deallocateIP(floatingIp.getId());
-				if (false == response.isSuccess()) {
-					logger.error(floatingIp.getFloatingIpAddress() + "未释放。" + response.getFault());
+			// allocate all ips from pool
+			String pool = pools.get(0);
+			while (true) {
+				try {
+					projectClient.compute().floatingIps().allocateIP(pool);
+				} catch (Exception e) {
+					break;
 				}
 			}
+
+			List<? extends FloatingIP> floatingIps = projectClient.compute().floatingIps().list();
+			for (FloatingIP floatingIp : floatingIps) {
+				if (floatingIp.getInstanceId() == null) {
+					availableFloatingIp.add(floatingIp.getFloatingIpAddress());
+
+					// deallocate ip back to pool
+					ActionResponse response = projectClient.compute().floatingIps().deallocateIP(floatingIp.getId());
+					if (false == response.isSuccess()) {
+						logger.error("释放地址" + floatingIp.getFloatingIpAddress() + "失败：" + response.getFault());
+					}
+				}
+			}
+		} catch (Exception e) {
+			throw new CloudException("获取可用地址发生错误。", e);
 		}
 
 		return availableFloatingIp;

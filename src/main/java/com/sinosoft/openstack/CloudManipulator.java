@@ -1,7 +1,6 @@
 package com.sinosoft.openstack;
 
 import java.util.List;
-import java.util.Map;
 
 import org.openstack4j.model.compute.Flavor;
 import org.openstack4j.model.compute.FloatingIP;
@@ -13,15 +12,47 @@ import org.openstack4j.model.compute.ext.Hypervisor;
 import org.openstack4j.model.image.Image;
 import org.openstack4j.model.network.NetFloatingIP;
 import org.openstack4j.model.network.Port;
+import org.openstack4j.model.storage.block.BlockLimits.Absolute;
 import org.openstack4j.model.storage.block.BlockQuotaSet;
 import org.openstack4j.model.storage.block.Volume;
-import org.openstack4j.model.storage.block.BlockLimits.Absolute;
+
+import com.sinosoft.openstack.type.ActionResult;
+import com.sinosoft.openstack.type.ServerInfo;
+import com.sinosoft.openstack.type.telemetry.ServerSamples;
 
 public interface CloudManipulator {
+	/**
+	 * create project
+	 * 
+	 * @param projectName
+	 *            - project name
+	 * @param projectDescription
+	 *            - project description
+	 * @param instanceQuota
+	 *            - instance quota
+	 * @param cpuQuota
+	 *            - cpu quota
+	 * @param memoryQuota
+	 *            - memory quota
+	 * @return project id
+	 * @author xiangqian
+	 */
 	public String createProject(String projectName, String projectDescription, int instanceQuota, int cpuQuota,
 			int memoryQuota);
 
-	public QuotaSet updateProjectComputeServiceQuota(int instanceQuota, int cpuQuota, int memoryQuota);
+	/**
+	 * update compute service quota of a project.
+	 * 
+	 * @param instanceQuota
+	 *            - instance quota
+	 * @param cpuQuota
+	 *            - cpu quota
+	 * @param memoryQuota
+	 *            - memory quota
+	 * @return updated quota
+	 * @author xiangqian
+	 */
+	public QuotaSet updateComputeServiceQuota(int instanceQuota, int cpuQuota, int memoryQuota);
 
 	/**
 	 * get absolute limits used by a project.
@@ -43,7 +74,13 @@ public interface CloudManipulator {
 	 */
 	public BlockQuotaSet updateBlockStorageQuota(int volumes, int gigabytes);
 
-	public boolean deleteProject();
+	/**
+	 * delete project
+	 * 
+	 * @return action result
+	 * @author xiangqian
+	 */
+	public ActionResult deleteProject();
 
 	/**
 	 * get volume list of a project.
@@ -75,8 +112,7 @@ public interface CloudManipulator {
 	 *            - new name
 	 * @param volumeDescription
 	 *            - new description
-	 * @return true if modify request sent successfully, return false if
-	 *         otherwise
+	 * @return true if modify request is sent successfully, return false if otherwise
 	 * @author xiangqian
 	 */
 	public boolean modifyVolume(String volumeId, String volumeName, String volumeDescription);
@@ -96,15 +132,13 @@ public interface CloudManipulator {
 	 * 
 	 * @param volumeId
 	 *            - volume id
-	 * @return true if delete request sent successfully, return false if
-	 *         otherwise
+	 * @return true if delete request is sent successfully, return false if otherwise
 	 * @author xiangqian
 	 */
 	public boolean deleteVolume(String volumeId);
 
 	/**
-	 * wait volume until its status transfer to the wait status in the given
-	 * time.
+	 * wait volume until its status transfer to the wait status in the given time.
 	 * 
 	 * @param volumeId
 	 *            - volume id
@@ -112,12 +146,11 @@ public interface CloudManipulator {
 	 *            - list of wait status
 	 * @param minute
 	 *            - wait time limit
-	 * @return true if volume status transfer to wait status during the given
-	 *         time, return false if otherwise
+	 * @return true if volume status transfer to wait status during the given time, return false if otherwise
 	 * @throws InterruptedException
 	 */
-	public boolean waitVolumeStatus(String volumeId, List<org.openstack4j.model.storage.block.Volume.Status> statusList,
-			int minute) throws InterruptedException;
+	public boolean waitVolumeStatus(String volumeId,
+			List<org.openstack4j.model.storage.block.Volume.Status> statusList, int minute) throws InterruptedException;
 
 	/**
 	 * wait volume until it's been deleted in the given time.
@@ -126,8 +159,7 @@ public interface CloudManipulator {
 	 *            - volume id
 	 * @param minute
 	 *            - wait time limit
-	 * @return true if volume is deleted during the given time, return false if
-	 *         otherwise
+	 * @return true if volume is deleted during the given time, return false if otherwise
 	 * @throws InterruptedException
 	 * @author xiangqian
 	 */
@@ -141,13 +173,67 @@ public interface CloudManipulator {
 	 */
 	public List<? extends Image> getImages();
 
+	/**
+	 * get image.
+	 * 
+	 * @param imageId
+	 *            - image id
+	 * @return image with the given id, or null if not found
+	 * @author xiangqian
+	 */
 	public Image getImage(String imageId);
 
-	public void waitImageStatus(String imageId, org.openstack4j.model.image.Image.Status status, int minute)
+	/**
+	 * wait image until its status transfer to the wait status in the given time.
+	 * 
+	 * @param imageId
+	 *            - image id
+	 * @param status
+	 *            - wait status
+	 * @param minute
+	 *            - wait time limit
+	 * @return true if image status transfer to wait status during the given time, return false if otherwise
+	 * @throws InterruptedException
+	 * @author xiangqian
+	 */
+	public boolean waitImageStatus(String imageId, org.openstack4j.model.image.Image.Status status, int minute)
 			throws InterruptedException;
 
+	// /**
+	// * wait image until it's been deleted in the given time.
+	// *
+	// * @param imageId
+	// * - image id
+	// * @param minute
+	// * - wait time limit
+	// * @return true if snapshot is deleted during the given time, return false if otherwise
+	// * @throws InterruptedException
+	// * @author xiangqian
+	// */
+	// public boolean waitImageDeleted(String imageId, int minute) throws InterruptedException;
+
+	/**
+	 * update image.
+	 * 
+	 * @param imageId
+	 *            - image id
+	 * @param imageName
+	 *            - image name
+	 * @param publicity
+	 *            - publicity
+	 * @return updated image
+	 * @author xiangqian
+	 */
 	public Image updateImage(String imageId, String imageName, boolean publicity);
 
+	/**
+	 * delete image.
+	 * 
+	 * @param imageId
+	 *            - image id
+	 * @return true if delete request is sent successfully, return false if otherwise
+	 * @author xiangqian
+	 */
 	public boolean deleteImage(String imageId);
 
 	/**
@@ -158,75 +244,288 @@ public interface CloudManipulator {
 	 */
 	public List<? extends Hypervisor> getHypervisors();
 
+	/**
+	 * get server list of a project.
+	 * 
+	 * @return server list
+	 * @author xiangqian
+	 */
 	public List<? extends Server> getServers();
 
+	/**
+	 * get flavor.
+	 * 
+	 * @param cpu
+	 *            - cpu parameter
+	 * @param memory
+	 *            - memory parameter
+	 * @param disk
+	 *            - disk parameter
+	 * @return flavor with the given parameters, or null if not found
+	 * @author xiangqian
+	 */
 	public Flavor getFlavor(int cpu, int memory, int disk);
 
+	/**
+	 * create flavor.
+	 * 
+	 * @param cpu
+	 *            - cpu parameter
+	 * @param memory
+	 *            - memory parameter
+	 * @param disk
+	 *            - disk parameter
+	 * @return created flavor
+	 * @author xiangqian
+	 */
 	public Flavor createFlavor(int cpu, int memory, int disk);
 
+	/**
+	 * create server.
+	 * 
+	 * @param serverName
+	 *            - server name
+	 * @param flavorId
+	 *            - flavor id
+	 * @param imageId
+	 *            - image id
+	 * @return created server
+	 * @author xiangqian
+	 */
 	public Server bootServer(String serverName, String flavorId, String imageId);
 
-	public void waitServerStatus(String serverId, List<Status> statusList, int minute) throws InterruptedException;
+	/**
+	 * wait server until its status transfer to the wait status in the given time. the server task status is None, which
+	 * means the server is in stable statue.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @param statusList
+	 *            - list of wait status
+	 * @param minute
+	 *            - wait time limit
+	 * @return true if volume status transfer to wait status during the given time, return false if otherwise
+	 * @throws InterruptedException
+	 */
+	public boolean waitServerStatus(String serverId, List<Status> statusList, int minute) throws InterruptedException;
 
+	/**
+	 * get server by id.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @return server with the given id, or null if not found
+	 * @author xiangqian
+	 */
 	public Server getServer(String serverId);
 
+	/**
+	 * start server.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @return true if start request is sent successfully, return false if otherwise
+	 * @author xiangqian
+	 */
 	public boolean startServer(String serverId);
 
+	/**
+	 * reboot server.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @return true if start request is sent successfully, return false if otherwise
+	 * @author xiangqian
+	 */
 	public boolean rebootServer(String serverId);
 
+	/**
+	 * stop server.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @return true if start request is sent successfully, return false if otherwise
+	 * @author xiangqian
+	 */
 	public boolean stopServer(String serverId);
 
+	/**
+	 * delete server.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @return true if delete request is sent successfully, return false if otherwise
+	 * @author xiangqian
+	 */
 	public boolean deleteServer(String serverId);
 
+	/**
+	 * get novnc console.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @return console of server with the given id, or null if not found
+	 * @author xiangqian
+	 */
 	public VNCConsole getServerVNCConsole(String serverId);
 
+	/**
+	 * renamve server.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @param newName
+	 *            - new name
+	 * @return renamed server
+	 * @author xiangqian
+	 */
 	public Server renameServer(String serverId, String newName);
 
-	public boolean associateFloatingIp(String serverId, String floatingIpAddress);
+	/**
+	 * associate floating ip to server.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @param floatingIpAddress
+	 *            - floating ip address
+	 * @return action result
+	 * @author xiangqian
+	 */
+	public ActionResult associateFloatingIp(String serverId, String floatingIpAddress);
 
-	public boolean deallocateFloatingIp(String serverId, String floatingIpAddress);
+	/**
+	 * remove floating ip from server, and deallocate back to pool.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @param floatingIpAddress
+	 *            - floating ip address
+	 * @return action result
+	 * @author xiangqian
+	 */
+	public ActionResult deallocateFloatingIp(String serverId, String floatingIpAddress);
 
+	/**
+	 * create snapshot of given server.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @param snapshotName
+	 *            - snapshot name
+	 * @return snapshot id
+	 * @author xiangqian
+	 */
 	public String createSnapshot(String serverId, String snapshotName);
 
 	/**
-	 * attach volume to a virtual machine.
+	 * attach volume to a server.
 	 * 
 	 * @param serverId
-	 *            - virtual machine id
+	 *            - server id
 	 * @param volumeId
 	 *            - volume id
-	 * @return true if attach request sent successfully, return false if
-	 *         otherwise
+	 * @return true if attach request is sent successfully, return false if otherwise
 	 * @author xiangqian
 	 */
 	public boolean attachVolume(String serverId, String volumeId);
 
 	/**
-	 * detach volume from a virtual machine.
+	 * detach volume from a server.
 	 * 
 	 * @param serverId
-	 *            - virtual machine id
+	 *            - server id
 	 * @param volumeId
 	 *            - volume id
-	 * @return true if detach request sent successfully, return false if
-	 *         otherwise
+	 * @return true if detach request is sent successfully, return false if otherwise
 	 * @author xiangqian
 	 */
 	public boolean detachVolume(String serverId, String volumeId);
 
+	/**
+	 * live migrate server to the hypervisor.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @param hypervisorName
+	 *            - hypervisor name
+	 * @return true if migrate request is sent successfully, return false if otherwise
+	 * @author xiangqian
+	 */
 	public boolean liveMigrate(String serverId, String hypervisorName);
 
-	public Map<String, String> getServerInfo(String serverId);
+	/**
+	 * get server info.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @return server info with the given id, or null if not found
+	 * @author xiangqian
+	 */
+	public ServerInfo getServerInfo(String serverId);
 
+	/**
+	 * create alarm.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @param alarmName
+	 *            - alarm name
+	 * @param meterName
+	 *            - meter name
+	 * @param threshold
+	 *            - threshold
+	 * @return alarm id
+	 * @author xiangqian
+	 */
 	public String createAlarm(String serverId, String alarmName, String meterName, float threshold);
 
+	/**
+	 * update alarm
+	 * 
+	 * @param alarmId
+	 *            - alarm id
+	 * @param enabled
+	 *            - enabled
+	 * @param threshold
+	 *            - alarm threshold
+	 * @return true if update request is sent successfully, return false if otherwise
+	 * @author xiangqian
+	 */
 	public boolean updateAlarm(String alarmId, boolean enabled, float threshold);
 
+	/**
+	 * delete alarm.
+	 * 
+	 * @param alarmId
+	 *            - alarm id
+	 * @return true if delete request is sent successfully, return false if otherwise
+	 * @author xiangqian
+	 */
 	public boolean deleteAlarm(String alarmId);
 
+	/**
+	 * get alarm state by id
+	 * 
+	 * @param alarmId
+	 *            - alarm id
+	 * @return alarm state, or null if alarm not found
+	 * @author xiangqian
+	 */
 	public String getAlarmState(String alarmId);
 
-	public Map<String, Object> getSamples(String serverId, String meterName, long timestamp);
+	/**
+	 * get server load data.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @param meterName
+	 *            - meter name
+	 * @param timestamp
+	 *            - start time
+	 * @return server sample
+	 * @author xiangqian
+	 */
+	public ServerSamples getSamples(String serverId, String meterName, long timestamp);
 
 	public List<String> getFloatingIpRange();
 
@@ -236,5 +535,11 @@ public interface CloudManipulator {
 
 	public List<? extends FloatingIP> getProjectFloatingIpList();
 
-	public List<String> getAvailableFloatingIp();
+	/**
+	 * get free floating ip list.
+	 * 
+	 * @return ip list
+	 * @author xiangqian
+	 */
+	public List<String> getAvailableFloatingIpList();
 }

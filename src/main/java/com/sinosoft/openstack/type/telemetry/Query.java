@@ -1,4 +1,4 @@
-package com.sinosoft.openstack.telemetry;
+package com.sinosoft.openstack.type.telemetry;
 
 public class Query {
 	private String field;

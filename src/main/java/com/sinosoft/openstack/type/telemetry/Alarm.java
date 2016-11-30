@@ -1,4 +1,4 @@
-package com.sinosoft.openstack.telemetry;
+package com.sinosoft.openstack.type.telemetry;
 
 import java.util.Date;
 import java.util.List;

@@ -1,4 +1,4 @@
-package com.sinosoft.openstack;
+package com.sinosoft.openstack.type;
 
 public class CloudConfig {
 	private String cloudManipulatorVersion;
