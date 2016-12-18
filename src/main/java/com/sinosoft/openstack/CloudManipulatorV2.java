@@ -2,10 +2,8 @@ package com.sinosoft.openstack;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import org.openstack4j.api.Builders;
@@ -16,7 +14,6 @@ import org.openstack4j.model.common.ActionResponse;
 import org.openstack4j.model.compute.Action;
 import org.openstack4j.model.compute.Address;
 import org.openstack4j.model.compute.Flavor;
-import org.openstack4j.model.compute.FloatingIP;
 import org.openstack4j.model.compute.IPProtocol;
 import org.openstack4j.model.compute.QuotaSet;
 import org.openstack4j.model.compute.RebootType;
@@ -44,20 +41,22 @@ import org.openstack4j.model.network.RouterInterface;
 import org.openstack4j.model.network.Subnet;
 import org.openstack4j.model.network.options.PortListOptions;
 import org.openstack4j.model.storage.block.BlockLimits;
+import org.openstack4j.model.storage.block.BlockLimits.Absolute;
 import org.openstack4j.model.storage.block.BlockQuotaSet;
 import org.openstack4j.model.storage.block.Volume;
-import org.openstack4j.model.storage.block.BlockLimits.Absolute;
 import org.openstack4j.model.telemetry.Alarm;
 import org.openstack4j.model.telemetry.Alarm.ThresholdRule;
 import org.openstack4j.model.telemetry.MeterSample;
 import org.openstack4j.model.telemetry.SampleCriteria;
 import org.openstack4j.openstack.OSFactory;
+import org.openstack4j.openstack.networking.domain.NeutronFloatingIP;
 import org.openstack4j.openstack.telemetry.domain.CeilometerAlarm;
 import org.openstack4j.openstack.telemetry.domain.CeilometerAlarm.CeilometerQuery;
 import org.openstack4j.openstack.telemetry.domain.CeilometerAlarm.CeilometerThresholdRule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.sinosoft.openstack.exception.CloudException;
 import com.sinosoft.openstack.type.ActionResult;
 import com.sinosoft.openstack.type.CloudConfig;
 import com.sinosoft.openstack.type.ServerInfo;
@@ -112,18 +111,13 @@ public class CloudManipulatorV2 implements CloudManipulator {
 				.tenantName(OS_TENANT_NAME).perspective(Facing.ADMIN).authenticate();
 
 		// create tenant
-		Tenant tenant = client
-				.identity()
-				.tenants()
-				.create(Builders.identityV2().tenant().name(projectName + "_" + UUID.randomUUID().toString())
-						.description(projectDescription).build());
+		Tenant tenant = client.identity().tenants().create(Builders.identityV2().tenant()
+				.name(projectName + "_" + UUID.randomUUID().toString()).description(projectDescription).build());
 		String tenantId = tenant.getId();
 
 		// set quota
-		client.compute()
-				.quotaSets()
-				.updateForTenant(tenantId,
-						Builders.quotaSet().instances(instanceQuota).cores(cpuQuota).ram(memoryQuota * 1024).build());
+		client.compute().quotaSets().updateForTenant(tenantId,
+				Builders.quotaSet().instances(instanceQuota).cores(cpuQuota).ram(memoryQuota * 1024).build());
 
 		// set user permission
 		User adminUser = client.identity().users().getByName(OS_USERNAME);
@@ -137,44 +131,27 @@ public class CloudManipulatorV2 implements CloudManipulator {
 		Network network = client.networking().network()
 				.create(Builders.network().name("private").tenantId(tenantId).adminStateUp(true).build());
 		// .addDNSNameServer("124.16.136.254")
-		Subnet subnet = client
-				.networking()
-				.subnet()
+		Subnet subnet = client.networking().subnet()
 				.create(Builders.subnet().name("private_subnet").networkId(network.getId()).tenantId(tenantId)
 						.ipVersion(IPVersionType.V4).cidr("192.168.32.0/24").gateway("192.168.32.1").enableDHCP(true)
 						.build());
-		Router router = client
-				.networking()
-				.router()
-				.create(Builders.router().name("router").adminStateUp(true).externalGateway(PUBLIC_NETWORK_ID)
-						.tenantId(tenantId).build());
+		Router router = client.networking().router().create(Builders.router().name("router").adminStateUp(true)
+				.externalGateway(PUBLIC_NETWORK_ID).tenantId(tenantId).build());
 		@SuppressWarnings("unused")
-		RouterInterface iface = client.networking().router()
-				.attachInterface(router.getId(), AttachInterfaceType.SUBNET, subnet.getId());
+		RouterInterface iface = client.networking().router().attachInterface(router.getId(), AttachInterfaceType.SUBNET,
+				subnet.getId());
 
 		// adjust security group
 		OSClientV2 tenantClient = OSFactory.builderV2().endpoint(OS_AUTH_URL).credentials(OS_USERNAME, OS_PASSWORD)
 				.tenantId(tenantId).authenticate();
 		List<? extends SecGroupExtension> secGroups = tenantClient.compute().securityGroups().list();
 		for (SecGroupExtension secGroup : secGroups) {
-			tenantClient
-					.compute()
-					.securityGroups()
-					.createRule(
-							Builders.secGroupRule().cidr("0.0.0.0/0").parentGroupId(secGroup.getId())
-									.protocol(IPProtocol.ICMP).range(-1, -1).build());
-			tenantClient
-					.compute()
-					.securityGroups()
-					.createRule(
-							Builders.secGroupRule().cidr("0.0.0.0/0").parentGroupId(secGroup.getId())
-									.protocol(IPProtocol.TCP).range(1, 65535).build());
-			tenantClient
-					.compute()
-					.securityGroups()
-					.createRule(
-							Builders.secGroupRule().cidr("0.0.0.0/0").parentGroupId(secGroup.getId())
-									.protocol(IPProtocol.UDP).range(1, 65535).build());
+			tenantClient.compute().securityGroups().createRule(Builders.secGroupRule().cidr("0.0.0.0/0")
+					.parentGroupId(secGroup.getId()).protocol(IPProtocol.ICMP).range(-1, -1).build());
+			tenantClient.compute().securityGroups().createRule(Builders.secGroupRule().cidr("0.0.0.0/0")
+					.parentGroupId(secGroup.getId()).protocol(IPProtocol.TCP).range(1, 65535).build());
+			tenantClient.compute().securityGroups().createRule(Builders.secGroupRule().cidr("0.0.0.0/0")
+					.parentGroupId(secGroup.getId()).protocol(IPProtocol.UDP).range(1, 65535).build());
 		}
 
 		return tenantId;
@@ -185,11 +162,8 @@ public class CloudManipulatorV2 implements CloudManipulator {
 		OSClientV2 client = OSFactory.builderV2().endpoint(OS_AUTH_URL).credentials(OS_USERNAME, OS_PASSWORD)
 				.tenantId(projectId).perspective(Facing.ADMIN).authenticate();
 
-		QuotaSet quota = client
-				.compute()
-				.quotaSets()
-				.updateForTenant(projectId,
-						Builders.quotaSet().cores(cpuQuota).instances(instanceQuota).ram(memoryQuota * 1024).build());
+		QuotaSet quota = client.compute().quotaSets().updateForTenant(projectId,
+				Builders.quotaSet().cores(cpuQuota).instances(instanceQuota).ram(memoryQuota * 1024).build());
 
 		return quota;
 	}
@@ -204,8 +178,8 @@ public class CloudManipulatorV2 implements CloudManipulator {
 
 	@Override
 	public BlockQuotaSet updateBlockStorageQuota(int volumes, int gigabytes) {
-		BlockQuotaSet quota = tenantClient.blockStorage().quotaSets()
-				.updateForTenant(projectId, Builders.blockQuotaSet().volumes(volumes).gigabytes(gigabytes).build());
+		BlockQuotaSet quota = tenantClient.blockStorage().quotaSets().updateForTenant(projectId,
+				Builders.blockQuotaSet().volumes(volumes).gigabytes(gigabytes).build());
 		return quota;
 	}
 
@@ -613,161 +587,161 @@ public class CloudManipulatorV2 implements CloudManipulator {
 		return server;
 	}
 
-	@Override
-	public ActionResult associateFloatingIp(String serverId, String floatingIpAddress) {
-		ActionResult result = new ActionResult();
-		boolean success = false;
-		String message = "";
+//	@Override
+//	public ActionResult associateFloatingIp(String serverId, String floatingIpAddress) {
+//		ActionResult result = new ActionResult();
+//		boolean success = false;
+//		String message = "";
+//
+//		try {
+//			Server server = getServer(serverId);
+//			if (null == server) {
+//				success = false;
+//				message = "绑定地址失败，服务器不存在。";
+//				logger.error(message);
+//				result.setSuccess(success);
+//				result.setMessage(message);
+//				return result;
+//			}
+//
+//			List<String> pools = tenantClient.compute().floatingIps().getPoolNames();
+//			if (pools.size() != 1) {
+//				success = false;
+//				message = "绑定地址失败，项目地址池数量不为1。";
+//				logger.error(message);
+//				result.setSuccess(success);
+//				result.setMessage(message);
+//				return result;
+//			}
+//
+//			// allocate all free ips from pool
+//			String pool = pools.get(0);
+//			while (true) {
+//				try {
+//					tenantClient.compute().floatingIps().allocateIP(pool);
+//				} catch (Exception e) {
+//					break;
+//				}
+//			}
+//
+//			/*
+//			 * associate ip if it's free, deallocate other free ip back to pool, so other project can make use of it.
+//			 */
+//			List<? extends FloatingIP> availableIps = tenantClient.compute().floatingIps().list();
+//			for (FloatingIP ip : availableIps) {
+//				if (ip.getInstanceId() == null) {
+//					if (ip.getFloatingIpAddress().equalsIgnoreCase(floatingIpAddress)) {
+//						ActionResponse response = tenantClient.compute().floatingIps().addFloatingIP(server,
+//								floatingIpAddress);
+//						if (true == response.isSuccess()) {
+//							success = true;
+//							message = "";
+//
+//							continue;
+//						} else {
+//							success = false;
+//							message = "绑定地址失败。";
+//							logger.error(message + response.getFault());
+//						}
+//					}
+//
+//					// deallocate unused ip back to the pool
+//					ActionResponse response2 = tenantClient.compute().floatingIps().deallocateIP(ip.getId());
+//					if (false == response2.isSuccess()) {
+//						logger.error("释放地址" + ip.getFloatingIpAddress() + "失败：" + response2.getFault());
+//					}
+//				}
+//			}
+//
+//			result.setSuccess(success);
+//			result.setMessage(message);
+//			return result;
+//		} catch (Exception e) {
+//			success = false;
+//			message = "绑定地址发生错误。";
+//			logger.error(message + e.getMessage());
+//			result.setSuccess(success);
+//			result.setMessage(message);
+//			return result;
+//		}
+//	}
 
-		try {
-			Server server = getServer(serverId);
-			if (null == server) {
-				success = false;
-				message = "绑定地址失败，服务器不存在。";
-				logger.error(message);
-				result.setSuccess(success);
-				result.setMessage(message);
-				return result;
-			}
+//	private boolean deallocate2(OSClientV2 tenantClient, Server server, String floatingIpAddress) {
+//		// disassociate ip from server
+//		ActionResponse response = tenantClient.compute().floatingIps().removeFloatingIP(server, floatingIpAddress);
+//		if (false == response.isSuccess()) {
+//			logger.error("解绑地址失败。" + response.getFault());
+//			return false;
+//		}
+//
+//		// deallocate ip back to pool
+//		List<? extends FloatingIP> floatingIps = tenantClient.compute().floatingIps().list();
+//		for (FloatingIP floatingIp : floatingIps) {
+//			if (floatingIp.getFloatingIpAddress().equalsIgnoreCase(floatingIpAddress)) {
+//				ActionResponse response2 = tenantClient.compute().floatingIps().deallocateIP(floatingIp.getId());
+//				if (false == response2.isSuccess()) {
+//					logger.warn("解绑地址出现警告，释放地址" + floatingIp.getFloatingIpAddress() + "失败。" + response2.getFault());
+//				}
+//				// if (true == response2.isSuccess()) {
+//				// return true;
+//				// } else {
+//				// logger.error(response2.getFault());
+//				// return false;
+//				// }
+//			}
+//		}
+//
+//		// return true despite the ip is not deallocated back to pool
+//		return true;
+//	}
 
-			List<String> pools = tenantClient.compute().floatingIps().getPoolNames();
-			if (pools.size() != 1) {
-				success = false;
-				message = "绑定地址失败，项目地址池数量不为1。";
-				logger.error(message);
-				result.setSuccess(success);
-				result.setMessage(message);
-				return result;
-			}
-
-			// allocate all free ips from pool
-			String pool = pools.get(0);
-			while (true) {
-				try {
-					tenantClient.compute().floatingIps().allocateIP(pool);
-				} catch (Exception e) {
-					break;
-				}
-			}
-
-			/*
-			 * associate ip if it's free, deallocate other free ip back to pool, so other project can make use of it.
-			 */
-			List<? extends FloatingIP> availableIps = tenantClient.compute().floatingIps().list();
-			for (FloatingIP ip : availableIps) {
-				if (ip.getInstanceId() == null) {
-					if (ip.getFloatingIpAddress().equalsIgnoreCase(floatingIpAddress)) {
-						ActionResponse response = tenantClient.compute().floatingIps()
-								.addFloatingIP(server, floatingIpAddress);
-						if (true == response.isSuccess()) {
-							success = true;
-							message = "";
-
-							continue;
-						} else {
-							success = false;
-							message = "绑定地址失败。";
-							logger.error(message + response.getFault());
-						}
-					}
-
-					// deallocate unused ip back to the pool
-					ActionResponse response2 = tenantClient.compute().floatingIps().deallocateIP(ip.getId());
-					if (false == response2.isSuccess()) {
-						logger.error("释放地址" + ip.getFloatingIpAddress() + "失败：" + response2.getFault());
-					}
-				}
-			}
-
-			result.setSuccess(success);
-			result.setMessage(message);
-			return result;
-		} catch (Exception e) {
-			success = false;
-			message = "绑定地址发生错误。";
-			logger.error(message + e.getMessage());
-			result.setSuccess(success);
-			result.setMessage(message);
-			return result;
-		}
-	}
-
-	private boolean deallocate2(OSClientV2 tenantClient, Server server, String floatingIpAddress) {
-		// disassociate ip from server
-		ActionResponse response = tenantClient.compute().floatingIps().removeFloatingIP(server, floatingIpAddress);
-		if (false == response.isSuccess()) {
-			logger.error("解绑地址失败。" + response.getFault());
-			return false;
-		}
-
-		// deallocate ip back to pool
-		List<? extends FloatingIP> floatingIps = tenantClient.compute().floatingIps().list();
-		for (FloatingIP floatingIp : floatingIps) {
-			if (floatingIp.getFloatingIpAddress().equalsIgnoreCase(floatingIpAddress)) {
-				ActionResponse response2 = tenantClient.compute().floatingIps().deallocateIP(floatingIp.getId());
-				if (false == response2.isSuccess()) {
-					logger.warn("解绑地址出现警告，释放地址" + floatingIp.getFloatingIpAddress() + "失败。" + response2.getFault());
-				}
-				// if (true == response2.isSuccess()) {
-				// return true;
-				// } else {
-				// logger.error(response2.getFault());
-				// return false;
-				// }
-			}
-		}
-
-		// return true despite the ip is not deallocated back to pool
-		return true;
-	}
-
-	@Override
-	public ActionResult deallocateFloatingIp(String serverId, String floatingIpAddress) {
-		ActionResult result = new ActionResult();
-		boolean success = false;
-		String message = "";
-
-		Server server = getServer(serverId);
-		if (null == server) {
-			success = false;
-			message = "解绑地址失败，服务器不存在。";
-			logger.error(message);
-			result.setSuccess(success);
-			result.setMessage(message);
-			return result;
-		}
-
-		Iterator<List<? extends Address>> it = server.getAddresses().getAddresses().values().iterator();
-		while (it.hasNext()) {
-			List<? extends Address> addresses = it.next();
-			for (Address address : addresses) {
-				String addrType = address.getType(), addr = address.getAddr();
-
-				if (addrType.equalsIgnoreCase("floating") && (addr.equalsIgnoreCase(floatingIpAddress))) {
-					boolean deallocated = deallocate2(tenantClient, server, floatingIpAddress);
-					if (true == deallocated) {
-						success = true;
-						message = "";
-						result.setSuccess(success);
-						result.setMessage(message);
-						return result;
-					} else {
-						success = false;
-						message = "解绑地址失败。";
-						result.setSuccess(success);
-						result.setMessage(message);
-						return result;
-					}
-				}
-			}
-		}
-
-		success = false;
-		message = "";
-		result.setSuccess(success);
-		result.setMessage(message);
-		return result;
-	}
+//	@Override
+//	public ActionResult deallocateFloatingIp(String serverId, String floatingIpAddress) {
+//		ActionResult result = new ActionResult();
+//		boolean success = false;
+//		String message = "";
+//
+//		Server server = getServer(serverId);
+//		if (null == server) {
+//			success = false;
+//			message = "解绑地址失败，服务器不存在。";
+//			logger.error(message);
+//			result.setSuccess(success);
+//			result.setMessage(message);
+//			return result;
+//		}
+//
+//		Iterator<List<? extends Address>> it = server.getAddresses().getAddresses().values().iterator();
+//		while (it.hasNext()) {
+//			List<? extends Address> addresses = it.next();
+//			for (Address address : addresses) {
+//				String addrType = address.getType(), addr = address.getAddr();
+//
+//				if (addrType.equalsIgnoreCase("floating") && (addr.equalsIgnoreCase(floatingIpAddress))) {
+//					boolean deallocated = deallocate2(tenantClient, server, floatingIpAddress);
+//					if (true == deallocated) {
+//						success = true;
+//						message = "";
+//						result.setSuccess(success);
+//						result.setMessage(message);
+//						return result;
+//					} else {
+//						success = false;
+//						message = "解绑地址失败。";
+//						result.setSuccess(success);
+//						result.setMessage(message);
+//						return result;
+//					}
+//				}
+//			}
+//		}
+//
+//		success = false;
+//		message = "";
+//		result.setSuccess(success);
+//		result.setMessage(message);
+//		return result;
+//	}
 
 	@Override
 	public boolean attachVolume(String serverId, String volumeId) {
@@ -806,8 +780,8 @@ public class CloudManipulatorV2 implements CloudManipulator {
 
 		// kilo use host name in live migration
 		// use host name when live migration, NOT FQDN!!!
-		ActionResponse response = tenantClient.compute().servers()
-				.liveMigrate(serverId, LiveMigrateOptions.create().host(host));
+		ActionResponse response = tenantClient.compute().servers().liveMigrate(serverId,
+				LiveMigrateOptions.create().host(host));
 		if (false == response.isSuccess()) {
 			logger.error(response.getFault());
 			return false;
@@ -856,10 +830,10 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	private String getResourceId(String serverId, String meterName) {
-		List<String> serverResourceMeters = new ArrayList<String>(Arrays.asList("cpu_util", "memory.resident",
-				"disk.read.bytes.rate", "disk.write.bytes.rate"));
-		List<String> networkResourceMeters = new ArrayList<String>(Arrays.asList("network.outgoing.bytes.rate",
-				"network.incoming.bytes.rate"));
+		List<String> serverResourceMeters = new ArrayList<String>(
+				Arrays.asList("cpu_util", "memory.resident", "disk.read.bytes.rate", "disk.write.bytes.rate"));
+		List<String> networkResourceMeters = new ArrayList<String>(
+				Arrays.asList("network.outgoing.bytes.rate", "network.incoming.bytes.rate"));
 
 		// get resource id
 		String resourceId;
@@ -870,8 +844,8 @@ public class CloudManipulatorV2 implements CloudManipulator {
 			List<? extends Port> ports = tenantClient.networking().port()
 					.list(PortListOptions.create().deviceId(serverId));
 			// TODO: assume ports length > 0
-			String networkResourceId = tenantClient.compute().servers().get(serverId).getInstanceName() + "-"
-					+ serverId + "-tap" + ports.get(0).getId();
+			String networkResourceId = tenantClient.compute().servers().get(serverId).getInstanceName() + "-" + serverId
+					+ "-tap" + ports.get(0).getId();
 			resourceId = networkResourceId.substring(0, 69);
 		} else {
 			logger.error("无效的监控指标");
@@ -909,9 +883,7 @@ public class CloudManipulatorV2 implements CloudManipulator {
 		actions.add("log://");
 
 		// alarm name must be unique inside the tenant, better suffix with the instance id
-		Alarm alarm = tenantClient
-				.telemetry()
-				.alarms()
+		Alarm alarm = tenantClient.telemetry().alarms()
 				.create(Builders.alarm().name(alarmName + "@" + serverId).description(alarmName + " high")
 						.type(Alarm.Type.THRESHOLD).thresholeRule(rule).alarmActions(actions).isEnabled(true).build());
 
@@ -1014,8 +986,8 @@ public class CloudManipulatorV2 implements CloudManipulator {
 		List<String> timeSeries = new ArrayList<String>();
 		List<Float> samples = new ArrayList<Float>();
 
-		SampleCriteria criteria = new SampleCriteria().resource(resourceId)
-				.timestamp(SampleCriteria.Oper.GT, timestamp);
+		SampleCriteria criteria = new SampleCriteria().resource(resourceId).timestamp(SampleCriteria.Oper.GT,
+				timestamp);
 		List<? extends MeterSample> meterSamples = tenantClient.telemetry().meters().samples(meterName, criteria);
 		for (MeterSample sample : meterSamples) {
 			timeSeries.add(processOpenstackTime(sample.getRecordedAt()));
@@ -1029,81 +1001,210 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	@Override
-	public List<String> getFloatingIpRange() {
+	public List<String> getExternalIps() {
 		List<String> floatingIpRange = new ArrayList<String>();
 
-		// TODO assert only one subnet
-		String subnetId = tenantClient.networking().network().get(PUBLIC_NETWORK_ID).getSubnets().get(0);
-		Subnet subnet = tenantClient.networking().subnet().get(subnetId);
-		String cidr = subnet.getCidr();
-
-		// prefix == 24
-		int prefix = Integer.parseInt(cidr.substring(cidr.indexOf('/') + 1));
-		if (24 != prefix) {
-			logger.error("不支持非24的浮动IP掩码");
+		Network publicNetwork = tenantClient.networking().network().get(PUBLIC_NETWORK_ID);
+		if (null == publicNetwork) {
+			logger.error("获取浮动IP地址范围出错，外部网络不存在。");
 			return floatingIpRange;
 		}
 
+		List<String> subnetIds = publicNetwork.getSubnets();
+		if (1 != subnetIds.size()) {
+			logger.error("获取浮动IP地址范围出错，外部网络所属的子网数不为1。");
+			return floatingIpRange;
+		}
+
+		String subnetId = subnetIds.get(0);
+		Subnet subnet = tenantClient.networking().subnet().get(subnetId);
+		if (null == subnet) {
+			logger.error("获取浮动IP地址范围出错，外部网络所属的子网不存在。");
+			return floatingIpRange;
+		}
+
+		// // prefix == 24
+		// String cidr = subnet.getCidr();
+		// int prefix = Integer.parseInt(cidr.substring(cidr.indexOf('/') + 1));
+		// if (24 != prefix) {
+		// logger.error("不支持非24的浮动IP掩码");
+		// return floatingIpRange;
+		// }
+
 		List<? extends Pool> pools = subnet.getAllocationPools();
-		// TODO assert all allocation pools have the same prefix
-		String ipSegment = pools.get(0).getStart().substring(0, pools.get(0).getStart().lastIndexOf('.'));
-		for (Pool p : pools) {
-			int start = Integer.parseInt(p.getStart().substring(p.getStart().lastIndexOf('.') + 1));
-			int end = Integer.parseInt(p.getEnd().substring(p.getEnd().lastIndexOf('.') + 1));
+		if (0 == pools.size()) {
+			logger.error("获取浮动IP地址范围出错，外部网络所属的子网没有指定地址池。");
+			return floatingIpRange;
+		}
+
+		for (Pool pool : pools) {
+			/*
+			 * each allocation pool must be defined in one C class net.
+			 */
+			String startIpAddress = pool.getStart();
+			String endIpAddress = pool.getEnd();
+			int CClassIpLength = 24;
+			String startIpAddressCPrefix = startIpAddress.substring(0, CClassIpLength);
+			String endIpAddressCPrefix = endIpAddress.substring(0, CClassIpLength);
+			if (false == startIpAddressCPrefix.equalsIgnoreCase(endIpAddressCPrefix)) {
+				logger.error("获取浮动IP地址范围出错，外部网络所属的子网地址池不是C类网段，该子网被忽略。");
+
+				continue;
+			}
+
+			// prefix of the start and end is the same, use any one.
+			String addressPrefix = startIpAddressCPrefix;
+			int start = Integer.parseInt((startIpAddress.substring(CClassIpLength + 1)));
+			int end = Integer.parseInt((endIpAddress.substring(CClassIpLength + 1)));
 			for (int i = start; i <= end; i++) {
-				floatingIpRange.add(ipSegment + "." + i);
+				floatingIpRange.add(addressPrefix + "." + i);
 			}
 		}
+
+		// // TODO assert all allocation pools have the same prefix
+		// String ipSegment = pools.get(0).getStart().substring(0, pools.get(0).getStart().lastIndexOf('.'));
+		// for (Pool p : pools) {
+		// int start = Integer.parseInt(p.getStart().substring(p.getStart().lastIndexOf('.') + 1));
+		// int end = Integer.parseInt(p.getEnd().substring(p.getEnd().lastIndexOf('.') + 1));
+		// for (int i = start; i <= end; i++) {
+		// floatingIpRange.add(ipSegment + "." + i);
+		// }
+		// }
 
 		return floatingIpRange;
 	}
 
 	@Override
-	public List<? extends Port> getGateways() {
-		List<? extends Port> gateways = tenantClient.networking().port()
-				.list(PortListOptions.create().networkId(PUBLIC_NETWORK_ID).deviceOwner("network:router_gateway"));
-		return gateways;
-	}
-
-	@Override
-	public List<? extends NetFloatingIP> getFloatingIpList() {
-		List<? extends NetFloatingIP> floatingIPs = tenantClient.networking().floatingip().list();
-		return floatingIPs;
-	}
-
-	@Override
-	public List<? extends FloatingIP> getProjectFloatingIpList() {
-		List<? extends FloatingIP> floatingIps = tenantClient.compute().floatingIps().list();
-		return floatingIps;
-	}
-
-	@Override
-	public List<String> getAvailableFloatingIpList() {
-		List<String> availableFloatingIp = new ArrayList<String>();
-
-		// allocate all ips from pool
-		String pool = tenantClient.compute().floatingIps().getPoolNames().get(0);
-		while (true) {
-			try {
-				tenantClient.compute().floatingIps().allocateIP(pool);
-			} catch (Exception e) {
-				break;
-			}
+	public List<? extends Port> getGatewayPorts() {
+		try {
+			List<? extends Port> gatewayPorts = tenantClient.networking().port()
+					.list(PortListOptions.create().networkId(PUBLIC_NETWORK_ID).deviceOwner("network:router_gateway"));
+			return gatewayPorts;
+		} catch (Exception e) {
+			throw new CloudException("获取路由网关端口发生错误。", e);
 		}
+	}
 
-		List<? extends FloatingIP> floatingIps = tenantClient.compute().floatingIps().list();
-		for (FloatingIP floatingIp : floatingIps) {
-			if (floatingIp.getInstanceId() == null) {
-				availableFloatingIp.add(floatingIp.getFloatingIpAddress());
+	@Override
+	public List<? extends Port> getFloatingIpPorts() {
+		try {
+			List<? extends Port> floatingIpPorts = tenantClient.networking().port()
+					.list(PortListOptions.create().networkId(PUBLIC_NETWORK_ID).deviceOwner("network:floatingip"));
+			return floatingIpPorts;
+		} catch (Exception e) {
+			throw new CloudException("获取浮动IP端口发生错误。", e);
+		}
+	}
 
-				// deallocate ip back to pool
-				ActionResponse response = tenantClient.compute().floatingIps().deallocateIP(floatingIp.getId());
-				if (false == response.isSuccess()) {
-					logger.error(floatingIp.getFloatingIpAddress() + "未释放。" + response.getFault());
+	@Override
+	public List<? extends NetFloatingIP> getFloatingIps() {
+		try {
+			List<? extends NetFloatingIP> floatingIPs = tenantClient.networking().floatingip().list();
+			return floatingIPs;
+		} catch (Exception e) {
+			throw new CloudException("获取浮动IP列表发生错误。", e);
+		}
+	}
+
+	@Override
+	public Port getPort(String portId) {
+		try {
+			Port port = tenantClient.networking().port().get(portId);
+			return port;
+		} catch (Exception e) {
+			throw new CloudException("获取端口发生错误。", e);
+		}
+	}
+
+	@Override
+	public Router getRouter(String routerId) {
+		try {
+			Router router = tenantClient.networking().router().get(routerId);
+			return router;
+		} catch (Exception e) {
+			throw new CloudException("获取路由发生错误。", e);
+		}
+	}
+
+	@Override
+	public ActionResult createFloatingIp(String ipAddress, String serverId) {
+		ActionResult result = new ActionResult();
+		boolean success = false;
+		String message = "";
+
+		NetFloatingIP floatingIp;
+		try {
+			Server server = getServer(serverId);
+			if (null == server) {
+				success = false;
+				message = "绑定地址失败，服务器不存在。";
+				logger.error(message);
+				result.setSuccess(success);
+				result.setMessage(message);
+				return result;
+			}
+
+			NeutronFloatingIP fip = new NeutronFloatingIP();
+			fip.setFloatingIpAddress(ipAddress);
+			fip.setTenantId(server.getTenantId());
+			fip.setFloatingNetworkId(PUBLIC_NETWORK_ID);
+
+			List<? extends Port> ports = tenantClient.networking().port()
+					.list(PortListOptions.create().deviceId(serverId));
+			if (1 != ports.size()) {
+				success = false;
+				message = "绑定地址失败，服务器端口数不为1。";
+				logger.error(message);
+				result.setSuccess(success);
+				result.setMessage(message);
+				return result;
+			}
+
+			Port port = ports.get(0);
+			String portId = port.getId();
+			fip.setPortId(portId);
+			floatingIp = tenantClient.networking().floatingip().create(fip);
+
+			success = true;
+			message = floatingIp.getId();
+			result.setSuccess(success);
+			result.setMessage(message);
+			return result;
+		} catch (Exception e) {
+			throw new CloudException("创建地址发生错误。", e);
+		}
+	}
+
+	@Override
+	public ActionResult deleteFloatingIp(String ipAddress) {
+		ActionResult result = new ActionResult();
+		boolean success = false;
+		String message = "";
+
+		try {
+			List<? extends NetFloatingIP> floatingIps = getFloatingIps();
+
+			for (NetFloatingIP floatingIp : floatingIps) {
+				String floatingIpAddress = floatingIp.getFloatingIpAddress();
+				if (true == ipAddress.equalsIgnoreCase(floatingIpAddress)) {
+					ActionResponse response = tenantClient.networking().floatingip().delete(floatingIp.getId());
+					if (true == response.isSuccess()) {
+						success = true;
+						message = "";
+					} else {
+						success = false;
+						message = response.getFault();
+					}
+
+					break;
 				}
 			}
+		} catch (Exception e) {
+			throw new CloudException("删除地址发生错误。", e);
 		}
 
-		return availableFloatingIp;
+		result.setSuccess(success);
+		result.setMessage(message);
+		return result;
 	}
 }

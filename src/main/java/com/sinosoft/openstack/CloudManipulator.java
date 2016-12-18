@@ -3,7 +3,6 @@ package com.sinosoft.openstack;
 import java.util.List;
 
 import org.openstack4j.model.compute.Flavor;
-import org.openstack4j.model.compute.FloatingIP;
 import org.openstack4j.model.compute.QuotaSet;
 import org.openstack4j.model.compute.Server;
 import org.openstack4j.model.compute.Server.Status;
@@ -12,6 +11,7 @@ import org.openstack4j.model.compute.ext.Hypervisor;
 import org.openstack4j.model.image.Image;
 import org.openstack4j.model.network.NetFloatingIP;
 import org.openstack4j.model.network.Port;
+import org.openstack4j.model.network.Router;
 import org.openstack4j.model.storage.block.BlockLimits.Absolute;
 import org.openstack4j.model.storage.block.BlockQuotaSet;
 import org.openstack4j.model.storage.block.Volume;
@@ -149,8 +149,8 @@ public interface CloudManipulator {
 	 * @return true if volume status transfer to wait status during the given time, return false if otherwise
 	 * @throws InterruptedException
 	 */
-	public boolean waitVolumeStatus(String volumeId,
-			List<org.openstack4j.model.storage.block.Volume.Status> statusList, int minute) throws InterruptedException;
+	public boolean waitVolumeStatus(String volumeId, List<org.openstack4j.model.storage.block.Volume.Status> statusList,
+			int minute) throws InterruptedException;
 
 	/**
 	 * wait volume until it's been deleted in the given time.
@@ -381,29 +381,31 @@ public interface CloudManipulator {
 	 */
 	public Server renameServer(String serverId, String newName);
 
-	/**
-	 * associate floating ip to server.
-	 * 
-	 * @param serverId
-	 *            - server id
-	 * @param floatingIpAddress
-	 *            - floating ip address
-	 * @return action result
-	 * @author xiangqian
-	 */
-	public ActionResult associateFloatingIp(String serverId, String floatingIpAddress);
-
-	/**
-	 * remove floating ip from server, and deallocate back to pool.
-	 * 
-	 * @param serverId
-	 *            - server id
-	 * @param floatingIpAddress
-	 *            - floating ip address
-	 * @return action result
-	 * @author xiangqian
-	 */
-	public ActionResult deallocateFloatingIp(String serverId, String floatingIpAddress);
+//	/**
+//	 * associate floating ip to server.
+//	 * 
+//	 * @param serverId
+//	 *            - server id
+//	 * @param floatingIpAddress
+//	 *            - floating ip address
+//	 * @return action result
+//	 * @author xiangqian
+//	 */
+//	@Deprecated
+//	public ActionResult associateFloatingIp(String serverId, String floatingIpAddress);
+//
+//	/**
+//	 * remove floating ip from server, and deallocate back to pool.
+//	 * 
+//	 * @param serverId
+//	 *            - server id
+//	 * @param floatingIpAddress
+//	 *            - floating ip address
+//	 * @return action result
+//	 * @author xiangqian
+//	 */
+//	@Deprecated
+//	public ActionResult deallocateFloatingIp(String serverId, String floatingIpAddress);
 
 	/**
 	 * create snapshot of given server.
@@ -527,19 +529,77 @@ public interface CloudManipulator {
 	 */
 	public ServerSamples getSamples(String serverId, String meterName, long timestamp);
 
-	public List<String> getFloatingIpRange();
-
-	public List<? extends Port> getGateways();
-
-	public List<? extends NetFloatingIP> getFloatingIpList();
-
-	public List<? extends FloatingIP> getProjectFloatingIpList();
-
 	/**
-	 * get free floating ip list.
+	 * get external ip range. the range includes a collection of ips defined in all allocation pools.
 	 * 
 	 * @return ip list
 	 * @author xiangqian
 	 */
-	public List<String> getAvailableFloatingIpList();
+	public List<String> getExternalIps();
+
+	/**
+	 * get router gateway port list.
+	 * 
+	 * @return gateway port list
+	 * @author xiangqian
+	 */
+	public List<? extends Port> getGatewayPorts();
+
+	/**
+	 * get floating ip port list.
+	 * 
+	 * @return floating ip port list
+	 * @author xiangqian
+	 */
+	public List<? extends Port> getFloatingIpPorts();
+
+	/**
+	 * get floating ip created in the cloud.
+	 * 
+	 * @return floating ip list
+	 * @author xiangqian
+	 */
+	public List<? extends NetFloatingIP> getFloatingIps();
+
+	/**
+	 * get port.
+	 * 
+	 * @param portId
+	 *            - port id
+	 * @return port with the given id, or null if not found
+	 * @author xiangqian
+	 */
+	public Port getPort(String portId);
+
+	/**
+	 * get router.
+	 * 
+	 * @param routerId
+	 *            - router id
+	 * @return router with the given id, or null if not found
+	 * @author xiangqian
+	 */
+	public Router getRouter(String routerId);
+
+	/**
+	 * create a floating ip and associate it to the given server.
+	 * 
+	 * @param ipAddress
+	 *            - floating ip address
+	 * @param serverId
+	 *            - server id
+	 * @return action result
+	 * @author xiangqian
+	 */
+	public ActionResult createFloatingIp(String ipAddress, String serverId);
+
+	/**
+	 * delete the floating ip, it'll be disassociated from server.
+	 * 
+	 * @param ipAddress
+	 *            - floating ip address
+	 * @return action result
+	 * @author xiangqian
+	 */
+	public ActionResult deleteFloatingIp(String ipAddress);
 }

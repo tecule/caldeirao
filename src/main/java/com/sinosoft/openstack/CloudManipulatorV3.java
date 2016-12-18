@@ -18,7 +18,6 @@ import org.openstack4j.model.common.Identifier;
 import org.openstack4j.model.compute.Action;
 import org.openstack4j.model.compute.Address;
 import org.openstack4j.model.compute.Flavor;
-import org.openstack4j.model.compute.FloatingIP;
 import org.openstack4j.model.compute.IPProtocol;
 import org.openstack4j.model.compute.QuotaSet;
 import org.openstack4j.model.compute.RebootType;
@@ -52,6 +51,7 @@ import org.openstack4j.model.storage.block.Volume;
 import org.openstack4j.model.telemetry.MeterSample;
 import org.openstack4j.model.telemetry.SampleCriteria;
 import org.openstack4j.openstack.OSFactory;
+import org.openstack4j.openstack.networking.domain.NeutronFloatingIP;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -150,11 +150,8 @@ public class CloudManipulatorV3 implements CloudManipulator {
 					.scopeToDomain(Identifier.byId(OS_USER_DOMAIN_ID)).authenticate();
 
 			// create tenant
-			Project project = domainClient
-					.identity()
-					.projects()
-					.create(Builders.project().name(projectName + "_" + UUID.randomUUID().toString())
-							.description(projectDescription).build());
+			Project project = domainClient.identity().projects().create(Builders.project()
+					.name(projectName + "_" + UUID.randomUUID().toString()).description(projectDescription).build());
 			projectId = project.getId();
 
 			// rename
@@ -172,8 +169,8 @@ public class CloudManipulatorV3 implements CloudManipulator {
 				throw new CloudException("获取角色发生错误。");
 			}
 			Role adminRole = roles.get(0);
-			ActionResponse response = domainClient.identity().roles()
-					.grantProjectUserRole(projectId, adminUser.getId(), adminRole.getId());
+			ActionResponse response = domainClient.identity().roles().grantProjectUserRole(projectId, adminUser.getId(),
+					adminRole.getId());
 			if (false == response.isSuccess()) {
 				logger.error("设置角色发生错误。" + response.getFault());
 				throw new CloudException("设置角色发生错误。");
@@ -185,57 +182,33 @@ public class CloudManipulatorV3 implements CloudManipulator {
 					.scopeToProject(Identifier.byId(projectId)).authenticate();
 
 			// set quota
-			newProjectClient
-					.compute()
-					.quotaSets()
-					.updateForTenant(
-							projectId,
-							Builders.quotaSet().instances(instanceQuota).cores(cpuQuota).ram(memoryQuota * 1024)
-									.build());
+			newProjectClient.compute().quotaSets().updateForTenant(projectId,
+					Builders.quotaSet().instances(instanceQuota).cores(cpuQuota).ram(memoryQuota * 1024).build());
 
 			// build network and router
-			Network network = newProjectClient
-					.networking()
-					.network()
-					.create(Builders.network().name("private" + "_" + projectId.substring(0, 8)).tenantId(projectId)
-							.adminStateUp(true).build());
+			Network network = newProjectClient.networking().network().create(Builders.network()
+					.name("private" + "_" + projectId.substring(0, 8)).tenantId(projectId).adminStateUp(true).build());
 			// .addDNSNameServer("114.114.114.114")
-			Subnet subnet = newProjectClient
-					.networking()
-					.subnet()
+			Subnet subnet = newProjectClient.networking().subnet()
 					.create(Builders.subnet().name("private_subnet" + "_" + projectId.substring(0, 8))
 							.networkId(network.getId()).tenantId(projectId).ipVersion(IPVersionType.V4)
 							.cidr("192.168.32.0/24").gateway("192.168.32.1").enableDHCP(true).build());
-			Router router = newProjectClient
-					.networking()
-					.router()
+			Router router = newProjectClient.networking().router()
 					.create(Builders.router().name("router" + "_" + projectId.substring(0, 8)).adminStateUp(true)
 							.externalGateway(PUBLIC_NETWORK_ID).tenantId(projectId).build());
 			@SuppressWarnings("unused")
-			RouterInterface iface = newProjectClient.networking().router()
-					.attachInterface(router.getId(), AttachInterfaceType.SUBNET, subnet.getId());
+			RouterInterface iface = newProjectClient.networking().router().attachInterface(router.getId(),
+					AttachInterfaceType.SUBNET, subnet.getId());
 
 			// add security group rule
 			List<? extends SecGroupExtension> secGroups = newProjectClient.compute().securityGroups().list();
 			for (SecGroupExtension secGroup : secGroups) {
-				newProjectClient
-						.compute()
-						.securityGroups()
-						.createRule(
-								Builders.secGroupRule().cidr("0.0.0.0/0").parentGroupId(secGroup.getId())
-										.protocol(IPProtocol.ICMP).range(-1, -1).build());
-				newProjectClient
-						.compute()
-						.securityGroups()
-						.createRule(
-								Builders.secGroupRule().cidr("0.0.0.0/0").parentGroupId(secGroup.getId())
-										.protocol(IPProtocol.TCP).range(1, 65535).build());
-				newProjectClient
-						.compute()
-						.securityGroups()
-						.createRule(
-								Builders.secGroupRule().cidr("0.0.0.0/0").parentGroupId(secGroup.getId())
-										.protocol(IPProtocol.UDP).range(1, 65535).build());
+				newProjectClient.compute().securityGroups().createRule(Builders.secGroupRule().cidr("0.0.0.0/0")
+						.parentGroupId(secGroup.getId()).protocol(IPProtocol.ICMP).range(-1, -1).build());
+				newProjectClient.compute().securityGroups().createRule(Builders.secGroupRule().cidr("0.0.0.0/0")
+						.parentGroupId(secGroup.getId()).protocol(IPProtocol.TCP).range(1, 65535).build());
+				newProjectClient.compute().securityGroups().createRule(Builders.secGroupRule().cidr("0.0.0.0/0")
+						.parentGroupId(secGroup.getId()).protocol(IPProtocol.UDP).range(1, 65535).build());
 			}
 		} catch (Exception e) {
 			throw new CloudException("创建项目发生错误，项目ID：" + projectId + "。", e);
@@ -247,13 +220,8 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	@Override
 	public QuotaSet updateComputeServiceQuota(int instanceQuota, int cpuQuota, int memoryQuota) {
 		try {
-			QuotaSet quota = projectClient
-					.compute()
-					.quotaSets()
-					.updateForTenant(
-							projectId,
-							Builders.quotaSet().cores(cpuQuota).instances(instanceQuota).ram(memoryQuota * 1024)
-									.build());
+			QuotaSet quota = projectClient.compute().quotaSets().updateForTenant(projectId,
+					Builders.quotaSet().cores(cpuQuota).instances(instanceQuota).ram(memoryQuota * 1024).build());
 
 			return quota;
 		} catch (Exception e) {
@@ -275,8 +243,8 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	@Override
 	public BlockQuotaSet updateBlockStorageQuota(int volumes, int gigabytes) {
 		try {
-			BlockQuotaSet quota = projectClient.blockStorage().quotaSets()
-					.updateForTenant(projectId, Builders.blockQuotaSet().volumes(volumes).gigabytes(gigabytes).build());
+			BlockQuotaSet quota = projectClient.blockStorage().quotaSets().updateForTenant(projectId,
+					Builders.blockQuotaSet().volumes(volumes).gigabytes(gigabytes).build());
 			return quota;
 		} catch (Exception e) {
 			throw new CloudException("更新块存储配额发生错误。", e);
@@ -407,8 +375,8 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	public boolean modifyVolume(String volumeId, String volumeName, String volumeDescription) {
 		try {
 			// modification will return true as long as cinder-api is working
-			ActionResponse response = projectClient.blockStorage().volumes()
-					.update(volumeId, volumeName, volumeDescription);
+			ActionResponse response = projectClient.blockStorage().volumes().update(volumeId, volumeName,
+					volumeDescription);
 			if (false == response.isSuccess()) {
 				logger.error("修改卷信息失败：" + response.getFault());
 				return false;
@@ -765,178 +733,178 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	@Override
 	public Server renameServer(String serverId, String newName) {
 		try {
-			Server server = projectClient.compute().servers()
-					.update(serverId, ServerUpdateOptions.create().name(newName));
+			Server server = projectClient.compute().servers().update(serverId,
+					ServerUpdateOptions.create().name(newName));
 			return server;
 		} catch (Exception e) {
 			throw new CloudException("重命名虚拟机发生错误。", e);
 		}
 	}
 
-	@Override
-	public ActionResult associateFloatingIp(String serverId, String floatingIpAddress) {
-		ActionResult result = new ActionResult();
-		boolean success = false;
-		String message = "";
-
-		try {
-			Server server = getServer(serverId);
-			if (null == server) {
-				success = false;
-				message = "绑定地址失败，服务器不存在。";
-				logger.error(message);
-				result.setSuccess(success);
-				result.setMessage(message);
-				return result;
-			}
-
-			List<String> pools = projectClient.compute().floatingIps().getPoolNames();
-			if (pools.size() != 1) {
-				success = false;
-				message = "绑定地址失败，项目地址池数量不为1。";
-				logger.error(message);
-				result.setSuccess(success);
-				result.setMessage(message);
-				return result;
-			}
-
-			// allocate all free ips from pool
-			String pool = pools.get(0);
-			while (true) {
-				try {
-					projectClient.compute().floatingIps().allocateIP(pool);
-				} catch (Exception e) {
-					break;
-				}
-			}
-
-			/*
-			 * associate ip if it's free, deallocate other free ip back to pool, so other project can make use of it.
-			 */
-			List<? extends FloatingIP> availableIps = projectClient.compute().floatingIps().list();
-			for (FloatingIP ip : availableIps) {
-				if (ip.getInstanceId() == null) {
-					if (ip.getFloatingIpAddress().equalsIgnoreCase(floatingIpAddress)) {
-						ActionResponse response = projectClient.compute().floatingIps()
-								.addFloatingIP(server, floatingIpAddress);
-						if (true == response.isSuccess()) {
-							success = true;
-							message = "";
-
-							continue;
-						} else {
-							success = false;
-							message = "绑定地址失败。";
-							logger.error(message + response.getFault());
-						}
-					}
-
-					// deallocate unused ip back to the pool
-					ActionResponse response2 = projectClient.compute().floatingIps().deallocateIP(ip.getId());
-					if (false == response2.isSuccess()) {
-						logger.error("释放地址" + ip.getFloatingIpAddress() + "失败：" + response2.getFault());
-					}
-				}
-			}
-
-			result.setSuccess(success);
-			result.setMessage(message);
-			return result;
-		} catch (Exception e) {
-			success = false;
-			message = "绑定地址发生错误。";
-			logger.error(message + e.getMessage());
-			result.setSuccess(success);
-			result.setMessage(message);
-			return result;
-		}
-	}
-
-	private boolean deallocate2(OSClientV3 projectClient, Server server, String floatingIpAddress) {
-		// disassociate ip from server
-		ActionResponse response = projectClient.compute().floatingIps().removeFloatingIP(server, floatingIpAddress);
-		if (false == response.isSuccess()) {
-			logger.error("解绑地址失败。" + response.getFault());
-			return false;
-		}
-
-		// deallocate ip back to pool
-		List<? extends FloatingIP> floatingIps = projectClient.compute().floatingIps().list();
-		for (FloatingIP floatingIp : floatingIps) {
-			if (floatingIp.getFloatingIpAddress().equalsIgnoreCase(floatingIpAddress)) {
-				ActionResponse response2 = projectClient.compute().floatingIps().deallocateIP(floatingIp.getId());
-				if (false == response2.isSuccess()) {
-					logger.warn("解绑地址出现警告，释放地址" + floatingIp.getFloatingIpAddress() + "失败。" + response2.getFault());
-				}
-				// if (true == response2.isSuccess()) {
-				// return true;
-				// } else {
-				// logger.error(response2.getFault());
-				// return false;
-				// }
-			}
-		}
-
-		// return true despite the ip is not deallocated back to pool
-		return true;
-	}
-
-	@Override
-	public ActionResult deallocateFloatingIp(String serverId, String floatingIpAddress) {
-		ActionResult result = new ActionResult();
-		boolean success = false;
-		String message = "";
-
-		try {
-			Server server = getServer(serverId);
-			if (null == server) {
-				success = false;
-				message = "解绑地址失败，服务器不存在。";
-				logger.error(message);
-				result.setSuccess(success);
-				result.setMessage(message);
-				return result;
-			}
-
-			Iterator<List<? extends Address>> it = server.getAddresses().getAddresses().values().iterator();
-			while (it.hasNext()) {
-				List<? extends Address> addresses = it.next();
-				for (Address address : addresses) {
-					String addrType = address.getType(), addr = address.getAddr();
-
-					if (addrType.equalsIgnoreCase("floating") && (addr.equalsIgnoreCase(floatingIpAddress))) {
-						boolean deallocated = deallocate2(projectClient, server, floatingIpAddress);
-						if (true == deallocated) {
-							success = true;
-							message = "";
-							result.setSuccess(success);
-							result.setMessage(message);
-							return result;
-						} else {
-							success = false;
-							message = "解绑地址失败。";
-							result.setSuccess(success);
-							result.setMessage(message);
-							return result;
-						}
-					}
-				}
-			}
-		} catch (Exception e) {
-			success = false;
-			message = "解绑地址发生错误。";
-			logger.error(message + e.getMessage());
-			result.setSuccess(success);
-			result.setMessage(message);
-			return result;
-		}
-
-		success = false;
-		message = "";
-		result.setSuccess(success);
-		result.setMessage(message);
-		return result;
-	}
+//	@Override
+//	public ActionResult associateFloatingIp(String serverId, String floatingIpAddress) {
+//		ActionResult result = new ActionResult();
+//		boolean success = false;
+//		String message = "";
+//
+//		try {
+//			Server server = getServer(serverId);
+//			if (null == server) {
+//				success = false;
+//				message = "绑定地址失败，服务器不存在。";
+//				logger.error(message);
+//				result.setSuccess(success);
+//				result.setMessage(message);
+//				return result;
+//			}
+//
+//			List<String> pools = projectClient.compute().floatingIps().getPoolNames();
+//			if (pools.size() != 1) {
+//				success = false;
+//				message = "绑定地址失败，项目地址池数量不为1。";
+//				logger.error(message);
+//				result.setSuccess(success);
+//				result.setMessage(message);
+//				return result;
+//			}
+//
+//			// allocate all free ips from pool
+//			String pool = pools.get(0);
+//			while (true) {
+//				try {
+//					projectClient.compute().floatingIps().allocateIP(pool);
+//				} catch (Exception e) {
+//					break;
+//				}
+//			}
+//
+//			/*
+//			 * associate ip if it's free, deallocate other free ip back to pool, so other project can make use of it.
+//			 */
+//			List<? extends FloatingIP> availableIps = projectClient.compute().floatingIps().list();
+//			for (FloatingIP ip : availableIps) {
+//				if (ip.getInstanceId() == null) {
+//					if (ip.getFloatingIpAddress().equalsIgnoreCase(floatingIpAddress)) {
+//						ActionResponse response = projectClient.compute().floatingIps().addFloatingIP(server,
+//								floatingIpAddress);
+//						if (true == response.isSuccess()) {
+//							success = true;
+//							message = "";
+//
+//							continue;
+//						} else {
+//							success = false;
+//							message = "绑定地址失败。";
+//							logger.error(message + response.getFault());
+//						}
+//					}
+//
+//					// deallocate unused ip back to the pool
+//					ActionResponse response2 = projectClient.compute().floatingIps().deallocateIP(ip.getId());
+//					if (false == response2.isSuccess()) {
+//						logger.error("释放地址" + ip.getFloatingIpAddress() + "失败：" + response2.getFault());
+//					}
+//				}
+//			}
+//
+//			result.setSuccess(success);
+//			result.setMessage(message);
+//			return result;
+//		} catch (Exception e) {
+//			success = false;
+//			message = "绑定地址发生错误。";
+//			logger.error(message + e.getMessage());
+//			result.setSuccess(success);
+//			result.setMessage(message);
+//			return result;
+//		}
+//	}
+//
+//	private boolean deallocate2(OSClientV3 projectClient, Server server, String floatingIpAddress) {
+//		// disassociate ip from server
+//		ActionResponse response = projectClient.compute().floatingIps().removeFloatingIP(server, floatingIpAddress);
+//		if (false == response.isSuccess()) {
+//			logger.error("解绑地址失败。" + response.getFault());
+//			return false;
+//		}
+//
+//		// deallocate ip back to pool
+//		List<? extends FloatingIP> floatingIps = projectClient.compute().floatingIps().list();
+//		for (FloatingIP floatingIp : floatingIps) {
+//			if (floatingIp.getFloatingIpAddress().equalsIgnoreCase(floatingIpAddress)) {
+//				ActionResponse response2 = projectClient.compute().floatingIps().deallocateIP(floatingIp.getId());
+//				if (false == response2.isSuccess()) {
+//					logger.warn("解绑地址出现警告，释放地址" + floatingIp.getFloatingIpAddress() + "失败。" + response2.getFault());
+//				}
+//				// if (true == response2.isSuccess()) {
+//				// return true;
+//				// } else {
+//				// logger.error(response2.getFault());
+//				// return false;
+//				// }
+//			}
+//		}
+//
+//		// return true despite the ip is not deallocated back to pool
+//		return true;
+//	}
+//
+//	@Override
+//	public ActionResult deallocateFloatingIp(String serverId, String floatingIpAddress) {
+//		ActionResult result = new ActionResult();
+//		boolean success = false;
+//		String message = "";
+//
+//		try {
+//			Server server = getServer(serverId);
+//			if (null == server) {
+//				success = false;
+//				message = "解绑地址失败，服务器不存在。";
+//				logger.error(message);
+//				result.setSuccess(success);
+//				result.setMessage(message);
+//				return result;
+//			}
+//
+//			Iterator<List<? extends Address>> it = server.getAddresses().getAddresses().values().iterator();
+//			while (it.hasNext()) {
+//				List<? extends Address> addresses = it.next();
+//				for (Address address : addresses) {
+//					String addrType = address.getType(), addr = address.getAddr();
+//
+//					if (addrType.equalsIgnoreCase("floating") && (addr.equalsIgnoreCase(floatingIpAddress))) {
+//						boolean deallocated = deallocate2(projectClient, server, floatingIpAddress);
+//						if (true == deallocated) {
+//							success = true;
+//							message = "";
+//							result.setSuccess(success);
+//							result.setMessage(message);
+//							return result;
+//						} else {
+//							success = false;
+//							message = "解绑地址失败。";
+//							result.setSuccess(success);
+//							result.setMessage(message);
+//							return result;
+//						}
+//					}
+//				}
+//			}
+//		} catch (Exception e) {
+//			success = false;
+//			message = "解绑地址发生错误。";
+//			logger.error(message + e.getMessage());
+//			result.setSuccess(success);
+//			result.setMessage(message);
+//			return result;
+//		}
+//
+//		success = false;
+//		message = "";
+//		result.setSuccess(success);
+//		result.setMessage(message);
+//		return result;
+//	}
 
 	@Override
 	public boolean attachVolume(String serverId, String volumeId) {
@@ -981,8 +949,8 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	public boolean liveMigrate(String serverId, String hypervisorName) {
 		try {
 			// mitaka use FQDN in live migration
-			ActionResponse response = projectClient.compute().servers()
-					.liveMigrate(serverId, LiveMigrateOptions.create().host(hypervisorName));
+			ActionResponse response = projectClient.compute().servers().liveMigrate(serverId,
+					LiveMigrateOptions.create().host(hypervisorName));
 			if (false == response.isSuccess()) {
 				logger.error("迁移虚拟机实例失败：" + response.getFault());
 				return false;
@@ -1046,10 +1014,10 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	 * @author xiangqian
 	 */
 	private String getResourceId(String serverId, String meterName) {
-		List<String> serverResourceMeters = new ArrayList<String>(Arrays.asList("cpu_util", "memory.resident",
-				"disk.read.bytes.rate", "disk.write.bytes.rate"));
-		List<String> networkResourceMeters = new ArrayList<String>(Arrays.asList("network.outgoing.bytes.rate",
-				"network.incoming.bytes.rate"));
+		List<String> serverResourceMeters = new ArrayList<String>(
+				Arrays.asList("cpu_util", "memory.resident", "disk.read.bytes.rate", "disk.write.bytes.rate"));
+		List<String> networkResourceMeters = new ArrayList<String>(
+				Arrays.asList("network.outgoing.bytes.rate", "network.incoming.bytes.rate"));
 
 		// get resource id
 		String resourceId;
@@ -1336,91 +1304,226 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	}
 
 	@Override
-	public List<String> getFloatingIpRange() {
-		List<String> floatingIpRange = new ArrayList<String>();
+	public List<String> getExternalIps() {
+		try {
+			List<String> floatingIpRange = new ArrayList<String>();
 
-		// TODO assert only one subnet
-		String subnetId = projectClient.networking().network().get(PUBLIC_NETWORK_ID).getSubnets().get(0);
-		Subnet subnet = projectClient.networking().subnet().get(subnetId);
-		String cidr = subnet.getCidr();
-
-		// prefix == 24
-		int prefix = Integer.parseInt(cidr.substring(cidr.indexOf('/') + 1));
-		if (24 != prefix) {
-			logger.error("不支持非24的浮动IP掩码");
-			return floatingIpRange;
-		}
-
-		List<? extends Pool> pools = subnet.getAllocationPools();
-		// TODO assert all allocation pools have the same prefix
-		String ipSegment = pools.get(0).getStart().substring(0, pools.get(0).getStart().lastIndexOf('.'));
-		for (Pool p : pools) {
-			int start = Integer.parseInt(p.getStart().substring(p.getStart().lastIndexOf('.') + 1));
-			int end = Integer.parseInt(p.getEnd().substring(p.getEnd().lastIndexOf('.') + 1));
-			for (int i = start; i <= end; i++) {
-				floatingIpRange.add(ipSegment + "." + i);
+			Network publicNetwork = projectClient.networking().network().get(PUBLIC_NETWORK_ID);
+			if (null == publicNetwork) {
+				logger.error("获取浮动IP地址范围出错，外部网络不存在。");
+				return floatingIpRange;
 			}
+
+			List<String> subnetIds = publicNetwork.getSubnets();
+			if (1 != subnetIds.size()) {
+				logger.error("获取浮动IP地址范围出错，外部网络所属的子网数不为1。");
+				return floatingIpRange;
+			}
+
+			String subnetId = subnetIds.get(0);
+			Subnet subnet = projectClient.networking().subnet().get(subnetId);
+			if (null == subnet) {
+				logger.error("获取浮动IP地址范围出错，外部网络所属的子网不存在。");
+				return floatingIpRange;
+			}
+
+			// // prefix == 24
+			// String cidr = subnet.getCidr();
+			// int prefix = Integer.parseInt(cidr.substring(cidr.indexOf('/') + 1));
+			// if (24 != prefix) {
+			// logger.error("不支持非24的浮动IP掩码");
+			// return floatingIpRange;
+			// }
+
+			List<? extends Pool> pools = subnet.getAllocationPools();
+			if (0 == pools.size()) {
+				logger.error("获取浮动IP地址范围出错，外部网络所属的子网没有指定地址池。");
+				return floatingIpRange;
+			}
+
+			for (Pool pool : pools) {
+				/*
+				 * each allocation pool must be defined in one C class net.
+				 */
+				String startIpAddress = pool.getStart();
+				String endIpAddress = pool.getEnd();
+
+				// int CClassIpLength = 24;
+				int lastDotPosition = startIpAddress.lastIndexOf('.');
+				String startIpAddressCPrefix = startIpAddress.substring(0, lastDotPosition);
+
+				lastDotPosition = endIpAddress.lastIndexOf('.');
+				String endIpAddressCPrefix = endIpAddress.substring(0, lastDotPosition);
+
+				// String startIpAddressCPrefix = startIpAddress.substring(0, CClassIpLength);
+				// String endIpAddressCPrefix = endIpAddress.substring(0, CClassIpLength);
+				if (false == startIpAddressCPrefix.equalsIgnoreCase(endIpAddressCPrefix)) {
+					logger.error("获取浮动IP地址范围出错，外部网络所属的子网地址池不是C类网段，该子网被忽略。");
+
+					continue;
+				}
+
+				// prefix of the start and end is the same, use any one.
+				String addressPrefix = startIpAddressCPrefix;
+				int start = Integer.parseInt((startIpAddress.substring(lastDotPosition + 1)));
+				int end = Integer.parseInt((endIpAddress.substring(lastDotPosition + 1)));
+				for (int i = start; i <= end; i++) {
+					floatingIpRange.add(addressPrefix + "." + i);
+				}
+			}
+
+			// // TODO assert all allocation pools have the same prefix
+			// String ipSegment = pools.get(0).getStart().substring(0, pools.get(0).getStart().lastIndexOf('.'));
+			// for (Pool p : pools) {
+			// int start = Integer.parseInt(p.getStart().substring(p.getStart().lastIndexOf('.') + 1));
+			// int end = Integer.parseInt(p.getEnd().substring(p.getEnd().lastIndexOf('.') + 1));
+			// for (int i = start; i <= end; i++) {
+			// floatingIpRange.add(ipSegment + "." + i);
+			// }
+			// }
+
+			return floatingIpRange;
+		} catch (NumberFormatException e) {
+			throw new CloudException("获取外网地址空间发生错误。", e);
+		} catch (Exception e) {
+			throw new CloudException("获取外网地址空间发生错误。", e);
 		}
-
-		return floatingIpRange;
 	}
 
 	@Override
-	public List<? extends Port> getGateways() {
-		List<? extends Port> gateways = projectClient.networking().port()
-				.list(PortListOptions.create().networkId(PUBLIC_NETWORK_ID).deviceOwner("network:router_gateway"));
-		return gateways;
+	public List<? extends Port> getGatewayPorts() {
+		try {
+			List<? extends Port> gatewayPorts = projectClient.networking().port()
+					.list(PortListOptions.create().networkId(PUBLIC_NETWORK_ID).deviceOwner("network:router_gateway"));
+			return gatewayPorts;
+		} catch (Exception e) {
+			throw new CloudException("获取路由网关端口发生错误。", e);
+		}
 	}
 
 	@Override
-	public List<? extends NetFloatingIP> getFloatingIpList() {
-		List<? extends NetFloatingIP> floatingIPs = projectClient.networking().floatingip().list();
-		return floatingIPs;
+	public List<? extends Port> getFloatingIpPorts() {
+		try {
+			List<? extends Port> floatingIpPorts = projectClient.networking().port()
+					.list(PortListOptions.create().networkId(PUBLIC_NETWORK_ID).deviceOwner("network:floatingip"));
+			return floatingIpPorts;
+		} catch (Exception e) {
+			throw new CloudException("获取浮动IP端口发生错误。", e);
+		}
 	}
 
 	@Override
-	public List<? extends FloatingIP> getProjectFloatingIpList() {
-		List<? extends FloatingIP> floatingIps = projectClient.compute().floatingIps().list();
-		return floatingIps;
+	public List<? extends NetFloatingIP> getFloatingIps() {
+		try {
+			List<? extends NetFloatingIP> floatingIPs = projectClient.networking().floatingip().list();
+			return floatingIPs;
+		} catch (Exception e) {
+			throw new CloudException("获取浮动IP列表发生错误。", e);
+		}
 	}
 
 	@Override
-	public List<String> getAvailableFloatingIpList() {
-		List<String> availableFloatingIp = new ArrayList<String>();
+	public Port getPort(String portId) {
+		try {
+			Port port = projectClient.networking().port().get(portId);
+			return port;
+		} catch (Exception e) {
+			throw new CloudException("获取端口发生错误。", e);
+		}
+	}
+
+	@Override
+	public Router getRouter(String routerId) {
+		try {
+			Router router = projectClient.networking().router().get(routerId);
+			return router;
+		} catch (Exception e) {
+			throw new CloudException("获取路由发生错误。", e);
+		}
+	}
+
+	@Override
+	public ActionResult createFloatingIp(String ipAddress, String serverId) {
+		ActionResult result = new ActionResult();
+		boolean success = false;
+		String message = "";
+
+		NetFloatingIP floatingIp;
+		try {
+			Server server = getServer(serverId);
+			if (null == server) {
+				success = false;
+				message = "绑定地址失败，服务器不存在。";
+				logger.error(message);
+				result.setSuccess(success);
+				result.setMessage(message);
+				return result;
+			}
+
+			/*
+			 * not possible to create and then associate using openstack4j, so create it with the port id.
+			 */
+			NeutronFloatingIP fip = new NeutronFloatingIP();
+			fip.setFloatingIpAddress(ipAddress);
+			fip.setTenantId(server.getTenantId());
+			fip.setFloatingNetworkId(PUBLIC_NETWORK_ID);
+
+			List<? extends Port> ports = projectClient.networking().port()
+					.list(PortListOptions.create().deviceId(serverId));
+			if (1 != ports.size()) {
+				success = false;
+				message = "绑定地址失败，服务器端口数不为1。";
+				logger.error(message);
+				result.setSuccess(success);
+				result.setMessage(message);
+				return result;
+			}
+
+			Port port = ports.get(0);
+			String portId = port.getId();
+			fip.setPortId(portId);
+			floatingIp = projectClient.networking().floatingip().create(fip);
+
+			success = true;
+			message = floatingIp.getId();
+			result.setSuccess(success);
+			result.setMessage(message);
+			return result;
+		} catch (Exception e) {
+			throw new CloudException("创建地址发生错误。", e);
+		}
+	}
+
+	@Override
+	public ActionResult deleteFloatingIp(String ipAddress) {
+		ActionResult result = new ActionResult();
+		boolean success = false;
+		String message = "";
 
 		try {
-			List<String> pools = projectClient.compute().floatingIps().getPoolNames();
-			if (pools.size() != 1) {
-				logger.error("获取可用地址失败，项目地址池数量不为1");
-				return availableFloatingIp;
-			}
+			List<? extends NetFloatingIP> floatingIps = getFloatingIps();
 
-			// allocate all ips from pool
-			String pool = pools.get(0);
-			while (true) {
-				try {
-					projectClient.compute().floatingIps().allocateIP(pool);
-				} catch (Exception e) {
+			for (NetFloatingIP floatingIp : floatingIps) {
+				String floatingIpAddress = floatingIp.getFloatingIpAddress();
+				if (true == ipAddress.equalsIgnoreCase(floatingIpAddress)) {
+					ActionResponse response = projectClient.networking().floatingip().delete(floatingIp.getId());
+					if (true == response.isSuccess()) {
+						success = true;
+						message = "";
+					} else {
+						success = false;
+						message = response.getFault();
+					}
+
 					break;
 				}
 			}
-
-			List<? extends FloatingIP> floatingIps = projectClient.compute().floatingIps().list();
-			for (FloatingIP floatingIp : floatingIps) {
-				if (floatingIp.getInstanceId() == null) {
-					availableFloatingIp.add(floatingIp.getFloatingIpAddress());
-
-					// deallocate ip back to pool
-					ActionResponse response = projectClient.compute().floatingIps().deallocateIP(floatingIp.getId());
-					if (false == response.isSuccess()) {
-						logger.error("释放地址" + floatingIp.getFloatingIpAddress() + "失败：" + response.getFault());
-					}
-				}
-			}
 		} catch (Exception e) {
-			throw new CloudException("获取可用地址发生错误。", e);
+			throw new CloudException("删除地址发生错误。", e);
 		}
 
-		return availableFloatingIp;
+		result.setSuccess(success);
+		result.setMessage(message);
+		return result;
 	}
 }
