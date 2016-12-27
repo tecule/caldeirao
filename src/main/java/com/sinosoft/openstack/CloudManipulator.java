@@ -310,6 +310,19 @@ public interface CloudManipulator {
 	public boolean waitServerStatus(String serverId, List<Status> statusList, int minute) throws InterruptedException;
 
 	/**
+	 * wait server until it's been deleted in the given time.
+	 * 
+	 * @param serverId
+	 *            - server id
+	 * @param minute
+	 *            - wait time limit
+	 * @return true if server is deleted during the given time, return false if otherwise
+	 * @throws InterruptedException
+	 * @author xiangqian
+	 */
+	public boolean waitServerDeleted(String serverId, int minute) throws InterruptedException;
+	
+	/**
 	 * get server by id.
 	 * 
 	 * @param serverId

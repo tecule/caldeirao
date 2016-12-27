@@ -690,6 +690,25 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	}
 
 	@Override
+	public boolean waitServerDeleted(String serverId, int minute) throws InterruptedException {
+		int sleepInterval = 6000;
+		int sleepCount = minute * 60 * 1000 / sleepInterval;
+
+		int loop = 0;
+		while (loop < sleepCount) {
+			Server server = getServer(serverId);
+			if (null == server) {
+				return true;
+			}
+
+			Thread.sleep(sleepInterval);
+			loop++;
+		}
+
+		return false;
+	}
+
+	@Override
 	public Server getServer(String serverId) {
 		try {
 			Server server = projectClient.compute().servers().get(serverId);
