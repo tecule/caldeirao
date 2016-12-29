@@ -1,9 +1,13 @@
 package com.sinosoft.openstack;
 
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
+import java.util.TimeZone;
 import java.util.UUID;
 
 import org.openstack4j.api.Builders;
@@ -849,25 +853,36 @@ public class CloudManipulatorV2 implements CloudManipulator {
 	}
 
 	private String getResourceId(String serverId, String meterName) {
-		List<String> serverResourceMeters = new ArrayList<String>(
-				Arrays.asList("cpu_util", "memory.resident", "disk.read.bytes.rate", "disk.write.bytes.rate"));
-		List<String> networkResourceMeters = new ArrayList<String>(
-				Arrays.asList("network.outgoing.bytes.rate", "network.incoming.bytes.rate"));
+		List<String> serverResourceMeters = new ArrayList<String>(Arrays.asList("cpu_util", "memory.usage",
+				"disk.read.bytes.rate", "disk.write.bytes.rate"));
+		List<String> networkResourceMeters = new ArrayList<String>(Arrays.asList("network.outgoing.bytes.rate",
+				"network.incoming.bytes.rate"));
 
 		// get resource id
 		String resourceId;
 		if (serverResourceMeters.contains(meterName)) {
 			resourceId = serverId;
 		} else if (networkResourceMeters.contains(meterName)) {
+			Server server = getServer(serverId);
+			if (null == server) {
+				logger.error("虚拟机实例不存在");
+				return null;
+			}
+
 			// get network port resource id
 			List<? extends Port> ports = tenantClient.networking().port()
 					.list(PortListOptions.create().deviceId(serverId));
+
 			// TODO: assume ports length > 0
-			String networkResourceId = tenantClient.compute().servers().get(serverId).getInstanceName() + "-" + serverId
-					+ "-tap" + ports.get(0).getId();
+			if (ports.size() <= 0) {
+				logger.error("虚拟机实例缺少网络端口");
+				return null;
+			}
+
+			String networkResourceId = server.getInstanceName() + "-" + serverId + "-tap" + ports.get(0).getId();
 			resourceId = networkResourceId.substring(0, 69);
 		} else {
-			logger.error("无效的监控指标");
+			logger.error("无效的监控项：" + meterName);
 			return null;
 		}
 
@@ -944,153 +959,140 @@ public class CloudManipulatorV2 implements CloudManipulator {
 		return alarm.getState();
 	}
 
-	private String processOpenstackTime(String dateTime) {
-		// TODO: what does the function do, and how to improve that?
+	private String convertUtcToLocal(String sampleTimestamp) throws ParseException {
+		SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
+		formatter.setTimeZone(TimeZone.getTimeZone("UTC"));
+		Date localDate = formatter.parse(sampleTimestamp);
+		formatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+		String localFormat = formatter.format(localDate);
 
-		int hour = Integer.parseInt(dateTime.split("T")[1].split(":")[0]);
-		int min = Integer.parseInt(dateTime.split("T")[1].split(":")[1]);
-		int sec = Integer.parseInt(dateTime.split("T")[1].split(":")[2].substring(0, 2));
-		int day = Integer.parseInt(dateTime.split("T")[0].split("-")[2]);
-		int month = Integer.parseInt(dateTime.split("T")[0].split("-")[1]);
-		int year = Integer.parseInt(dateTime.split("T")[0].split("-")[0]);
-
-		if (hour >= 16) {
-			hour = hour - 16;
-			day = day + 1;
-		} else {
-			hour = hour + 8;
-		}
-
-		if (month == 1 || month == 3 || month == 5 || month == 7 || month == 8 || month == 10) {
-			if (day == 32) {
-				month++;
-				day = 1;
-			}
-		} else if (month == 4 || month == 6 || month == 9 || month == 11) {
-			if (day == 31) {
-				month++;
-				day = 1;
-			}
-		} else if (month == 12 && day == 32) {
-			year++;
-			day = 1;
-			month = 1;
-		} else if (month == 2) {
-			if (year % 4 == 0) {
-				if (day == 30) {
-					month++;
-					day = 1;
-				}
-			} else {
-				if (day == 29) {
-					month++;
-					day = 1;
-				}
-			}
-		}
-
-		return year + "-" + (month < 10 ? ("0" + month) : month) + "-" + (day < 10 ? ("0" + day) : day) + " "
-				+ (hour < 10 ? ("0" + hour) : hour) + ":" + (min < 10 ? ("0" + min) : min) + ":"
-				+ (sec < 10 ? ("0" + sec) : sec);
+		return localFormat;
 	}
 
 	@Override
 	public ServerSamples getSamples(String serverId, String meterName, long timestamp) {
-		String resourceId = getResourceId(serverId, meterName);
-		if (null == resourceId) {
-			return null;
-		}
-
 		ServerSamples serverSamples = new ServerSamples();
+		
+		/*
+		 * initialize result
+		 */
 		List<String> timeSeries = new ArrayList<String>();
 		List<Float> samples = new ArrayList<Float>();
-
-		SampleCriteria criteria = new SampleCriteria().resource(resourceId).timestamp(SampleCriteria.Oper.GT,
-				timestamp);
-		List<? extends MeterSample> meterSamples = tenantClient.telemetry().meters().samples(meterName, criteria);
-		for (MeterSample sample : meterSamples) {
-			timeSeries.add(processOpenstackTime(sample.getRecordedAt()));
-			samples.add(sample.getCounterVolume());
-		}
-
 		serverSamples.setMeterName(meterName);
 		serverSamples.setTimeSeries(timeSeries);
 		serverSamples.setSamples(samples);
-		return serverSamples;
+
+		String resourceId = getResourceId(serverId, meterName);
+		if (null == resourceId) {
+			return serverSamples;
+		}
+
+		try {
+			SampleCriteria criteria = new SampleCriteria().resource(resourceId).timestamp(SampleCriteria.Oper.GT,
+					timestamp);
+			List<? extends MeterSample> meterSamples = tenantClient.telemetry().meters().samples(meterName, criteria);
+			/*
+			 * invert result order
+			 */
+			for (int index = meterSamples.size() - 1; index >= 0; index--) {
+				MeterSample sample = meterSamples.get(index);
+				timeSeries.add(convertUtcToLocal(sample.getTimestamp()));
+				samples.add(sample.getCounterVolume());
+			}
+
+			serverSamples.setTimeSeries(timeSeries);
+			serverSamples.setSamples(samples);
+			return serverSamples;
+		} catch (Exception e) {
+			throw new CloudException("获取虚拟机负载发生错误。", e);
+		}
 	}
 
 	@Override
 	public List<String> getExternalIps() {
-		List<String> floatingIpRange = new ArrayList<String>();
+		try {
+			List<String> floatingIpRange = new ArrayList<String>();
 
-		Network publicNetwork = tenantClient.networking().network().get(PUBLIC_NETWORK_ID);
-		if (null == publicNetwork) {
-			logger.error("获取浮动IP地址范围出错，外部网络不存在。");
-			return floatingIpRange;
-		}
-
-		List<String> subnetIds = publicNetwork.getSubnets();
-		if (1 != subnetIds.size()) {
-			logger.error("获取浮动IP地址范围出错，外部网络所属的子网数不为1。");
-			return floatingIpRange;
-		}
-
-		String subnetId = subnetIds.get(0);
-		Subnet subnet = tenantClient.networking().subnet().get(subnetId);
-		if (null == subnet) {
-			logger.error("获取浮动IP地址范围出错，外部网络所属的子网不存在。");
-			return floatingIpRange;
-		}
-
-		// // prefix == 24
-		// String cidr = subnet.getCidr();
-		// int prefix = Integer.parseInt(cidr.substring(cidr.indexOf('/') + 1));
-		// if (24 != prefix) {
-		// logger.error("不支持非24的浮动IP掩码");
-		// return floatingIpRange;
-		// }
-
-		List<? extends Pool> pools = subnet.getAllocationPools();
-		if (0 == pools.size()) {
-			logger.error("获取浮动IP地址范围出错，外部网络所属的子网没有指定地址池。");
-			return floatingIpRange;
-		}
-
-		for (Pool pool : pools) {
-			/*
-			 * each allocation pool must be defined in one C class net.
-			 */
-			String startIpAddress = pool.getStart();
-			String endIpAddress = pool.getEnd();
-			int CClassIpLength = 24;
-			String startIpAddressCPrefix = startIpAddress.substring(0, CClassIpLength);
-			String endIpAddressCPrefix = endIpAddress.substring(0, CClassIpLength);
-			if (false == startIpAddressCPrefix.equalsIgnoreCase(endIpAddressCPrefix)) {
-				logger.error("获取浮动IP地址范围出错，外部网络所属的子网地址池不是C类网段，该子网被忽略。");
-
-				continue;
+			Network publicNetwork = tenantClient.networking().network().get(PUBLIC_NETWORK_ID);
+			if (null == publicNetwork) {
+				logger.error("获取浮动IP地址范围出错，外部网络不存在。");
+				return floatingIpRange;
 			}
 
-			// prefix of the start and end is the same, use any one.
-			String addressPrefix = startIpAddressCPrefix;
-			int start = Integer.parseInt((startIpAddress.substring(CClassIpLength + 1)));
-			int end = Integer.parseInt((endIpAddress.substring(CClassIpLength + 1)));
-			for (int i = start; i <= end; i++) {
-				floatingIpRange.add(addressPrefix + "." + i);
+			List<String> subnetIds = publicNetwork.getSubnets();
+			if (1 != subnetIds.size()) {
+				logger.error("获取浮动IP地址范围出错，外部网络所属的子网数不为1。");
+				return floatingIpRange;
 			}
+
+			String subnetId = subnetIds.get(0);
+			Subnet subnet = tenantClient.networking().subnet().get(subnetId);
+			if (null == subnet) {
+				logger.error("获取浮动IP地址范围出错，外部网络所属的子网不存在。");
+				return floatingIpRange;
+			}
+
+			// // prefix == 24
+			// String cidr = subnet.getCidr();
+			// int prefix = Integer.parseInt(cidr.substring(cidr.indexOf('/') + 1));
+			// if (24 != prefix) {
+			// logger.error("不支持非24的浮动IP掩码");
+			// return floatingIpRange;
+			// }
+
+			List<? extends Pool> pools = subnet.getAllocationPools();
+			if (0 == pools.size()) {
+				logger.error("获取浮动IP地址范围出错，外部网络所属的子网没有指定地址池。");
+				return floatingIpRange;
+			}
+
+			for (Pool pool : pools) {
+				/*
+				 * each allocation pool must be defined in one C class net.
+				 */
+				String startIpAddress = pool.getStart();
+				String endIpAddress = pool.getEnd();
+
+				// int CClassIpLength = 24;
+				int lastDotPosition = startIpAddress.lastIndexOf('.');
+				String startIpAddressCPrefix = startIpAddress.substring(0, lastDotPosition);
+
+				lastDotPosition = endIpAddress.lastIndexOf('.');
+				String endIpAddressCPrefix = endIpAddress.substring(0, lastDotPosition);
+
+				// String startIpAddressCPrefix = startIpAddress.substring(0, CClassIpLength);
+				// String endIpAddressCPrefix = endIpAddress.substring(0, CClassIpLength);
+				if (false == startIpAddressCPrefix.equalsIgnoreCase(endIpAddressCPrefix)) {
+					logger.error("获取浮动IP地址范围出错，外部网络所属的子网地址池不是C类网段，该子网被忽略。");
+
+					continue;
+				}
+
+				// prefix of the start and end is the same, use any one.
+				String addressPrefix = startIpAddressCPrefix;
+				int start = Integer.parseInt((startIpAddress.substring(lastDotPosition + 1)));
+				int end = Integer.parseInt((endIpAddress.substring(lastDotPosition + 1)));
+				for (int i = start; i <= end; i++) {
+					floatingIpRange.add(addressPrefix + "." + i);
+				}
+			}
+
+			// // TODO assert all allocation pools have the same prefix
+			// String ipSegment = pools.get(0).getStart().substring(0, pools.get(0).getStart().lastIndexOf('.'));
+			// for (Pool p : pools) {
+			// int start = Integer.parseInt(p.getStart().substring(p.getStart().lastIndexOf('.') + 1));
+			// int end = Integer.parseInt(p.getEnd().substring(p.getEnd().lastIndexOf('.') + 1));
+			// for (int i = start; i <= end; i++) {
+			// floatingIpRange.add(ipSegment + "." + i);
+			// }
+			// }
+
+			return floatingIpRange;
+		} catch (NumberFormatException e) {
+			throw new CloudException("获取外网地址空间发生错误。", e);
+		} catch (Exception e) {
+			throw new CloudException("获取外网地址空间发生错误。", e);
 		}
-
-		// // TODO assert all allocation pools have the same prefix
-		// String ipSegment = pools.get(0).getStart().substring(0, pools.get(0).getStart().lastIndexOf('.'));
-		// for (Pool p : pools) {
-		// int start = Integer.parseInt(p.getStart().substring(p.getStart().lastIndexOf('.') + 1));
-		// int end = Integer.parseInt(p.getEnd().substring(p.getEnd().lastIndexOf('.') + 1));
-		// for (int i = start; i <= end; i++) {
-		// floatingIpRange.add(ipSegment + "." + i);
-		// }
-		// }
-
-		return floatingIpRange;
 	}
 
 	@Override
@@ -1163,6 +1165,9 @@ public class CloudManipulatorV2 implements CloudManipulator {
 				return result;
 			}
 
+			/*
+			 * not possible to create and then associate using openstack4j, so create it with the port id.
+			 */
 			NeutronFloatingIP fip = new NeutronFloatingIP();
 			fip.setFloatingIpAddress(ipAddress);
 			fip.setTenantId(server.getTenantId());

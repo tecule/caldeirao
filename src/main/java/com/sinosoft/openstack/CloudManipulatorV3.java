@@ -1072,7 +1072,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 	 * @author xiangqian
 	 */
 	private String getResourceId(String serverId, String meterName) {
-		List<String> serverResourceMeters = new ArrayList<String>(Arrays.asList("cpu_util", "memory.resident",
+		List<String> serverResourceMeters = new ArrayList<String>(Arrays.asList("cpu_util", "memory.usage",
 				"disk.read.bytes.rate", "disk.write.bytes.rate"));
 		List<String> networkResourceMeters = new ArrayList<String>(Arrays.asList("network.outgoing.bytes.rate",
 				"network.incoming.bytes.rate"));
@@ -1101,7 +1101,7 @@ public class CloudManipulatorV3 implements CloudManipulator {
 			String networkResourceId = server.getInstanceName() + "-" + serverId + "-tap" + ports.get(0).getId();
 			resourceId = networkResourceId.substring(0, 69);
 		} else {
-			logger.error("无效的监控指标");
+			logger.error("无效的监控项：" + meterName);
 			return null;
 		}
 
